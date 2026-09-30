@@ -1,0 +1,5 @@
+rule_order,experience,segment,goal,time_available,plan_id,why_line,status
+1,any,any,any,no time in market hours,P12M,[Why line to be written with sales - input C2],PLACEHOLDER - TO CONFIRM
+2,beginner,any,any,any,P6M,[Why line to be written with sales - input C2],PLACEHOLDER - TO CONFIRM
+3,any,options,any,any,P3M,[Why line to be written with sales - input C2],PLACEHOLDER - TO CONFIRM
+4,any,any,any,any,P3M,[Why line to be written with sales - input C2],PLACEHOLDER - TO CONFIRM

@@ -1,0 +1,241 @@
+{
+  "_read_me": "Every setting has: value, owner (Tushar = your decision; Claude = proposal, change if you like; Open = waiting for the named decision) and a note. Change only 'value'.",
+  "trial_length_days": {
+    "value": 3,
+    "owner": "Open - G1 (3 or 5 days)",
+    "note": "Trial day shown to Tanya; Day-based rules use it"
+  },
+  "education_questions_per_day": {
+    "value": 30,
+    "owner": "Tushar 25-Sep-2026",
+    "note": "Only education questions count; resets 00:00 IST"
+  },
+  "failed_turns_for_handoff": {
+    "value": 3,
+    "owner": "Tushar 25-Sep-2026",
+    "note": "Failed turns in one session before a person is offered"
+  },
+  "profile_questions_per_session": {
+    "value": 2,
+    "owner": "Claude - Architecture 7.2",
+    "note": "Missing profile facts asked at most this many times per session"
+  },
+  "session_gap_minutes": {
+    "value": 30,
+    "owner": "Claude - Architecture 7.6",
+    "note": "Silence longer than this starts a new session"
+  },
+  "small_talk_turns_before_bridge": {
+    "value": 2,
+    "owner": "Claude - Personality Guide 6.3",
+    "note": "After this many small-talk turns she bridges to the journey"
+  },
+  "value_card_min_user_messages": {
+    "value": 3,
+    "owner": "Claude",
+    "note": "A value card is shown only from his 3rd message"
+  },
+  "label_confidence_min": {
+    "value": 0.6,
+    "owner": "Claude",
+    "note": "A label counts only at this confidence or more"
+  },
+  "calling_window_start": {
+    "value": "10:00",
+    "owner": "Open - Architecture 21.2.1",
+    "note": "Team calling hours start (IST)"
+  },
+  "calling_window_end": {
+    "value": "19:00",
+    "owner": "Open - Architecture 21.2.1",
+    "note": "Team calling hours end (IST)"
+  },
+  "interest_expiry_hours": {
+    "value": 72,
+    "owner": "Claude - Architecture 8",
+    "note": "Interest signal expires"
+  },
+  "intent_expiry_hours": {
+    "value": 48,
+    "owner": "Claude - Architecture 8",
+    "note": "Purchase intent signal expires"
+  },
+  "daily_ai_spend_ceiling_inr": {
+    "value": 200,
+    "owner": "Open - E2",
+    "note": "Demo ceiling for all users together; at 100% fixed line FX-05"
+  },
+  "spend_alert_percent": {
+    "value": 80,
+    "owner": "Claude - Architecture 17",
+    "note": "Alert shown in the trace at this share of the ceiling"
+  },
+  "usd_to_inr": {
+    "value": 96,
+    "owner": "Claude - checked 25-Sep-2026",
+    "note": "For the cost ledger"
+  },
+  "temperature_understand": {
+    "value": 0.0,
+    "owner": "Claude",
+    "note": "Creativity of the understand call"
+  },
+  "temperature_reply": {
+    "value": 0.4,
+    "owner": "Claude - tuned in bake-off",
+    "note": "Creativity of Tanya's replies (low keeps her close to golden examples)"
+  },
+  "temperature_check": {
+    "value": 0.0,
+    "owner": "Claude",
+    "note": "Creativity of the SEBI AI check"
+  },
+  "max_lines_chat": {
+    "value": 3,
+    "owner": "Claude - Personality Guide 3",
+    "note": "Short lines per normal reply"
+  },
+  "max_lines_teaching": {
+    "value": 6,
+    "owner": "Claude - Personality Guide 3",
+    "note": "Short lines when teaching"
+  },
+  "disclaimer_once_per_session": {
+    "value": true,
+    "owner": "Claude",
+    "note": "Fixed disclaimer FX-17 after education or refusal, once per session"
+  },
+  "knowledge_top_k": {
+    "value": 3,
+    "owner": "Claude",
+    "note": "Knowledge pieces put into the prompt"
+  },
+  "golden_examples_per_prompt": {
+    "value": 6,
+    "owner": "Claude - Personality Guide 10",
+    "note": "Approved examples shown to the model"
+  },
+  "abuse_count_for_handoff": {
+    "value": 2,
+    "owner": "Claude - Personality Guide 5.3",
+    "note": "Abusive messages in a session before hand-off"
+  },
+  "contradictions_visible_to_agents": {
+    "value": false,
+    "owner": "Claude - Architecture 9.4.7 (shadow mode)",
+    "note": "Contradictions are logged but hidden from the Lead Brief until 8 of 10 reviewed items prove real"
+  },
+  "history_messages_in_prompt": {
+    "value": 10,
+    "owner": "Claude - Architecture 7.6",
+    "note": "Last messages given word for word"
+  },
+  "timeout_understand_seconds": {
+    "value": 20,
+    "owner": "Claude - demo value",
+    "note": "Production: Architecture 15"
+  },
+  "timeout_reply_seconds": {
+    "value": 40,
+    "owner": "Claude - demo value",
+    "note": "Production: Architecture 15"
+  },
+  "timeout_check_seconds": {
+    "value": 20,
+    "owner": "Claude - demo value",
+    "note": "Production: Architecture 15"
+  },
+  "human_mode_release_hours": {
+    "value": 12,
+    "owner": "Claude - v4 design; Open to change",
+    "note": "HUMAN mode ends by itself after this many hours without staff activity"
+  },
+  "greeting_min_gap_hours": {
+    "value": 3,
+    "owner": "Claude",
+    "note": "App-open greeting at most once in this many hours"
+  },
+  "stream_partitions": {
+    "value": 8,
+    "owner": "Claude - v4 design",
+    "note": "Redis Streams partitions (order per customer)"
+  },
+  "max_deliveries_before_dead_letter": {
+    "value": 5,
+    "owner": "Claude - v4 design",
+    "note": "A job failing this many times goes to the dead-letter stream"
+  },
+  "reclaim_idle_seconds": {
+    "value": 60,
+    "owner": "Claude - v4 design",
+    "note": "A job not acknowledged for this long is picked up again"
+  },
+  "models": {
+    "owner": "Tushar - your key; Claude - model choice",
+    "anthropic": {
+      "fast": "claude-haiku-4-5-20251001",
+      "detailed": "claude-sonnet-5-5"
+    },
+    "openai": {
+      "fast": "gpt-6-luna",
+      "detailed": "gpt-6-sol"
+    },
+    "google": {
+      "fast": "gemini-3.6-flash",
+      "detailed": "gemini-3.6-flash",
+      "backup": "gemini-3.5-flash"
+    },
+    "mock": {
+      "fast": "mock-fast",
+      "detailed": "mock-detailed"
+    }
+  },
+  "prices_usd_per_million_tokens": {
+    "owner": "Claude - checked 25/29-Sep-2026",
+    "claude-haiku-4-5-20251001": [
+      1.0,
+      5.0
+    ],
+    "claude-sonnet-5-5": [
+      2.0,
+      10.0
+    ],
+    "gpt-6-luna": [
+      0.1,
+      0.5
+    ],
+    "gpt-6-sol": [
+      2.0,
+      10.0
+    ],
+    "gemini-3.5-flash": [
+      0.75,
+      3.75
+    ],
+    "gemini-3.6-flash": [
+      0.75,
+      3.75
+    ],
+    "gemini-3.8-flash": [
+      0.75,
+      3.75
+    ],
+    "gemini-3.1-pro-preview": [
+      2.0,
+      12.0
+    ],
+    "mock-fast": [
+      0.0,
+      0.0
+    ],
+    "mock-detailed": [
+      0.0,
+      0.0
+    ]
+  },
+  "embedding_models": {
+    "owner": "Claude - verify model names on first run",
+    "openai": "text-embedding-3-small",
+    "google": "gemini-embedding-001"
+  }
+}

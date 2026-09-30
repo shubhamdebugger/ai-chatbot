@@ -1,0 +1,29 @@
+{
+  "_read_me": "Value cards from Simulations v0.4 section 4. Parts marked TO CONFIRM must be filled by Tushar (input C5) before real users.",
+  "cards": [
+    {"id": "VC-1", "title": "Learning alongside trades",
+     "pain_words": ["samajh nahi", "don't understand", "follow calls", "confus", "beginner", "naya", "seekh"],
+     "provides": "[TO CONFIRM - which plans include classes, recordings, course videos]",
+     "explanation": "Every research alert explains its reason; lessons explain the concept behind it.",
+     "limits": "Learning takes time; no promise of results.",
+     "next_step": "First lesson"},
+    {"id": "VC-2", "title": "Stop-loss in every research",
+     "pain_words": ["loss", "nuksaan", "doob", "tips", "wiped", "stop-loss", "sl"],
+     "provides": "[TO CONFIRM - Simulations v0.4 section 4.2: published in every alert / trailing updates / taught in lessons]",
+     "explanation": "Risk is defined before entry, so a wrong trade's loss is planned in advance.",
+     "limits": "Losses still happen; a stop-loss limits them, it does not prevent them.",
+     "next_step": "Position-size lesson"},
+    {"id": "VC-3", "title": "SEBI registration",
+     "pain_words": ["fraud", "trust", "bharosa", "fake", "scam", "genuine"],
+     "provides": "Registered entity, registration number and grievance route [TO CONFIRM - fixed text D1]",
+     "explanation": "He can verify the registration himself on the SEBI website.",
+     "limits": "Registration is not a guarantee of performance or returns.",
+     "next_step": "Disclosures page"},
+    {"id": "VC-4", "title": "Continued guidance in the trial",
+     "pain_words": ["alone", "akela", "no one", "koi nahi", "left out", "guide"],
+     "provides": "Ms Tanya plus the team; callbacks in calling hours [TO CONFIRM - calling window]",
+     "explanation": "One practical walkthrough matched to his difficulty.",
+     "limits": "Specific trade questions go to the research team's published research only.",
+     "next_step": "The next step in his journey"}
+  ]
+}

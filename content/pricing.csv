@@ -1,0 +1,4 @@
+plan_id,plan_name,duration,price_inr,gst_included,inclusions,not_included,status
+P3M,3-Month Plan,3 months,15000,TO CONFIRM,[Inclusions to be confirmed by Tushar - input C1],[To be confirmed],PLACEHOLDER - TO CONFIRM
+P6M,6-Month Plan with Course,6 months,30000,TO CONFIRM,[Inclusions to be confirmed by Tushar - input C1; course included per June-2026 note],[To be confirmed],PLACEHOLDER - TO CONFIRM
+P12M,1-Year Plan with Mentoring,12 months,60000,TO CONFIRM,[Inclusions to be confirmed by Tushar - input C1; mentoring and swing trades per June-2026 note],[To be confirmed],PLACEHOLDER - TO CONFIRM

@@ -1,0 +1,117 @@
+{
+  "_read_me": "Fixed lines FX-01..FX-18. The AI never writes these. {name}, {case_no}, {when}, {slot_1}, {slot_2}, {plan_line}, {limit}, {sebi_reg_no} are filled by code. Status: DRAFT - for Tushar and compliance approval (input D2).",
+  "FX-01": {
+    "moment": "AI disclosure - first message ever",
+    "english": "Hi {name}, I'm Tanya — TG Level's AI assistant. I'll guide you through your trial step by step and answer your questions. Whenever you want a person from our team, just say so.",
+    "hinglish": "Namaste {name}, main Tanya hoon — TG Level ki AI assistant. Aapke trial mein step by step guide karungi. Kabhi bhi team se baat karni ho, bas bol dijiye.",
+    "hindi": "नमस्ते {name}, मैं तान्या हूँ — TG Level की AI असिस्टेंट। आपके ट्रायल में स्टेप बाय स्टेप गाइड करूँगी। कभी भी टीम से बात करनी हो, बस बोल दीजिए।"
+  },
+  "FX-02": {
+    "moment": "Chat-first line, once after the first useful answer",
+    "english": "I'll guide you step by step right here in chat. If you'd ever like a 5-minute phone call, just tell me.",
+    "hinglish": "Main yahin chat par aapko step by step guide karungi. Kabhi phone par 5 minute baat karni ho, toh bas bata dijiyega.",
+    "hindi": "मैं यहीं चैट पर आपको स्टेप बाय स्टेप गाइड करूँगी। कभी फ़ोन पर 5 मिनट बात करनी हो, तो बस बता दीजिएगा।"
+  },
+  "FX-03": {
+    "moment": "Refusal of a trade question",
+    "english": "I'm not allowed to tell market direction or suggest any trade — those are SEBI rules. But I can teach you how to read such a situation yourself.",
+    "hinglish": "Market ka direction batana ya koi trade suggest karna mere liye allowed nahi hai — SEBI ke rules hain. Par aisi situation ko khud kaise padhein, woh main sikha sakti hoon.",
+    "hindi": "मार्केट की दिशा बताना या कोई ट्रेड सुझाना मेरे लिए अनुमति नहीं है — ये SEBI के नियम हैं। पर ऐसी स्थिति को खुद कैसे पढ़ें, वो मैं सिखा सकती हूँ।"
+  },
+  "FX-04": {
+    "moment": "Daily education questions used up",
+    "english": "We've covered today's {limit} learning questions. We'll continue tomorrow from here. Meanwhile, if you'd like the plan details or a call with our team, just tell me and I'll arrange it.",
+    "hinglish": "Aaj ke {limit} learning sawaal poore ho gaye. Kal yahin se aage badhenge. Tab tak plan ki detail chahiye ya team se baat karni ho, toh bataiye — main arrange kar deti hoon.",
+    "hindi": "आज के {limit} लर्निंग सवाल पूरे हो गए। कल यहीं से आगे बढ़ेंगे। तब तक प्लान की जानकारी चाहिए या टीम से बात करनी हो, तो बताइए — मैं व्यवस्था कर देती हूँ।"
+  },
+  "FX-05": {
+    "moment": "Daily AI spend ceiling reached",
+    "english": "I'm unable to reply properly right now. Your message is saved, and our team will get back to you.",
+    "hinglish": "Abhi main theek se jawab nahi de paa rahi hoon. Aapka message save hai — hamari team aapse sampark karegi.",
+    "hindi": "अभी मैं ठीक से जवाब नहीं दे पा रही हूँ। आपका मैसेज सेव है — हमारी टीम आपसे संपर्क करेगी।"
+  },
+  "FX-06": {
+    "moment": "Limited mode - CRM down (production only)",
+    "english": "Right now I can answer general and learning questions only. For account questions, I'll have our team get back to you.",
+    "hinglish": "Abhi main sirf general aur learning ke sawaalon ka jawab de sakti hoon. Account wale sawaal ke liye team aapse sampark karegi.",
+    "hindi": "अभी मैं सिर्फ़ सामान्य और सीखने वाले सवालों का जवाब दे सकती हूँ। अकाउंट वाले सवाल के लिए टीम आपसे संपर्क करेगी।"
+  },
+  "FX-07": {
+    "moment": "Hand-off outside calling hours",
+    "english": "Our team is offline right now. I've noted your request — a team member will contact you {when}. Until then I'm right here if you need anything else.",
+    "hinglish": "Abhi hamari team online nahi hai. Maine aapki request note kar li hai — team ka ek member {when} aapse sampark karega. Tab tak main yahin hoon.",
+    "hindi": "अभी हमारी टीम ऑनलाइन नहीं है। मैंने आपका अनुरोध नोट कर लिया है — टीम का एक सदस्य {when} आपसे संपर्क करेगा। तब तक मैं यहीं हूँ।"
+  },
+  "FX-08": {
+    "moment": "Hand-off inside calling hours",
+    "english": "Sure — I've informed our team. A team member will join you shortly here or on a call. I'm here till then.",
+    "hinglish": "Theek hai — maine team ko bata diya hai. Team ka ek member jaldi hi aapse yahin chat par ya call par judega. Tab tak main yahin hoon.",
+    "hindi": "ठीक है — मैंने टीम को बता दिया है। टीम का एक सदस्य जल्द ही आपसे यहीं चैट पर या कॉल पर जुड़ेगा। तब तक मैं यहीं हूँ।"
+  },
+  "FX-09": {
+    "moment": "No consent (DPDP agreement) in the app",
+    "english": "I can answer your questions. To remember our chats and guide you personally, the app agreement needs to be accepted — you can do that in the app at any time.",
+    "hinglish": "Main aapke sawaalon ka jawab de sakti hoon. Aapki baatein yaad rakhne aur personal guidance ke liye app ka agreement accept karna hota hai — woh aap app mein kabhi bhi kar sakte hain.",
+    "hindi": "मैं आपके सवालों का जवाब दे सकती हूँ। आपकी बातें याद रखने और पर्सनल गाइडेंस के लिए ऐप का एग्रीमेंट स्वीकार करना होता है — वो आप ऐप में कभी भी कर सकते हैं।"
+  },
+  "FX-10": {
+    "moment": "Grievance acknowledged with case number",
+    "english": "I'm sorry for the trouble. I've registered your complaint — case number {case_no}. Our team will look into it and contact you.",
+    "hinglish": "Aapki pareshani ke liye sorry. Maine aapki complaint darj kar li hai — case number {case_no}. Hamari team ise dekh kar aapse sampark karegi.",
+    "hindi": "आपकी परेशानी के लिए खेद है। मैंने आपकी शिकायत दर्ज कर ली है — केस नंबर {case_no}। हमारी टीम इसे देखकर आपसे संपर्क करेगी।"
+  },
+  "FX-11": {
+    "moment": "Are you a real person?",
+    "english": "No, I'm TG Level's AI assistant. If you'd like, I can connect you with a member of our team.",
+    "hinglish": "Nahi, main TG Level ki AI assistant hoon. Aap chahein toh hamari team ke kisi member se baat karwa deti hoon.",
+    "hindi": "नहीं, मैं TG Level की AI असिस्टेंट हूँ। आप चाहें तो हमारी टीम के किसी सदस्य से बात करवा देती हूँ।"
+  },
+  "FX-12": {
+    "moment": "Safe fallback",
+    "english": "Sorry, I can't answer that properly right now. Could you ask it a little differently, or shall I connect you with our team?",
+    "hinglish": "Maaf kijiye, iska jawab main abhi theek se nahi de paa rahi. Kya aap ise thoda alag tareeke se pooch sakte hain, ya main team se baat karwa doon?",
+    "hindi": "माफ़ कीजिए, इसका जवाब मैं अभी ठीक से नहीं दे पा रही। क्या आप इसे थोड़ा अलग तरीके से पूछ सकते हैं, या मैं टीम से बात करवा दूँ?"
+  },
+  "FX-13": {
+    "moment": "His preference is a call - two slots",
+    "english": "Of course. When should we call — {slot_1} or {slot_2}?",
+    "hinglish": "Bilkul. Kab call karein — {slot_1} ya {slot_2}?",
+    "hindi": "बिल्कुल। कब कॉल करें — {slot_1} या {slot_2}?"
+  },
+  "FX-14": {
+    "moment": "Purchase - a senior calls for the formalities",
+    "english": "Great. {plan_line}Payment and the formalities are handled by our senior — I've sent them your details. They will contact you {when}.",
+    "hinglish": "Bahut accha. {plan_line}Payment aur baaki formalities hamare senior karte hain — maine unhe aapki detail bhej di hai. Woh {when} aapse sampark karenge.",
+    "hindi": "बहुत अच्छा। {plan_line}पेमेंट और बाकी औपचारिकताएँ हमारे सीनियर करते हैं — मैंने उन्हें आपकी जानकारी भेज दी है। वो {when} आपसे संपर्क करेंगे।"
+  },
+  "FX-15": {
+    "moment": "Abuse - calm line",
+    "english": "I understand you're upset. I want to help — tell me what the problem is, or shall I connect you with our team?",
+    "hinglish": "Main samajh sakti hoon aap pareshan hain. Main madad karna chahti hoon — bataiye kya problem hai, ya main team se baat karwa doon?",
+    "hindi": "मैं समझ सकती हूँ आप परेशान हैं। मैं मदद करना चाहती हूँ — बताइए क्या समस्या है, या मैं टीम से बात करवा दूँ?"
+  },
+  "FX-16": {
+    "moment": "Repeated flirting - firm line",
+    "english": "I'm here only to help with your trading journey. Shall we continue with today's lesson?",
+    "hinglish": "Main sirf aapki trading journey mein help ke liye hoon. Aaj ke lesson par chalein?",
+    "hindi": "मैं सिर्फ़ आपकी ट्रेडिंग यात्रा में मदद के लिए हूँ। आज के लेसन पर चलें?"
+  },
+  "FX-17": {
+    "moment": "Disclaimer (TO CONFIRM - input D1)",
+    "english": "This is for learning only, not advice on any trade. Investments in the securities market are subject to market risk.",
+    "hinglish": "Yeh sirf seekhne ke liye hai, kisi trade ki salah nahi. Securities market mein nivesh market risk ke adheen hai.",
+    "hindi": "यह सिर्फ़ सीखने के लिए है, किसी ट्रेड की सलाह नहीं। सिक्योरिटीज़ मार्केट में निवेश बाज़ार जोखिम के अधीन है।"
+  },
+  "FX-18": {
+    "moment": "SEBI registration line (TO CONFIRM - input D1)",
+    "english": "TG Level is a SEBI-registered Research Analyst (Registration No. {sebi_reg_no}). Registration does not guarantee performance or returns.",
+    "hinglish": "TG Level SEBI-registered Research Analyst hai (Registration No. {sebi_reg_no}). Registration kisi performance ya return ki guarantee nahi hai.",
+    "hindi": "TG Level एक SEBI-पंजीकृत रिसर्च एनालिस्ट है (पंजीकरण संख्या {sebi_reg_no})। पंजीकरण किसी प्रदर्शन या रिटर्न की गारंटी नहीं है।"
+  },
+  "FX-19": {
+    "moment": "Support question not covered by approved knowledge - passed to team with case number",
+    "english": "I don't want to guess on this. I've passed it to our team — case number {case_no}. They will get back to you.",
+    "hinglish": "Is par main andaaza nahi lagana chahti. Maine ise team ko bhej diya hai — case number {case_no}. Woh aapse sampark karenge.",
+    "hindi": "इस पर मैं अंदाज़ा नहीं लगाना चाहती। मैंने इसे टीम को भेज दिया है — केस नंबर {case_no}। वो आपसे संपर्क करेंगे।"
+  }
+}

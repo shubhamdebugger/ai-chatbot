@@ -1,0 +1,33 @@
+{
+  "_read_me": "Layer 3 net (input D3). 'promise' patterns are allowed when the same sentence carries a denial (nahi / not / no / cannot / koi ... nahi / नहीं). 'hard' patterns are never allowed in Tanya's reply. Regular expressions, case-insensitive.",
+  "promise": [
+    {"id": "P1", "pattern": "guarantee", "why": "Return promise"},
+    {"id": "P2", "pattern": "गारंटी", "why": "Return promise (Hindi)"},
+    {"id": "P3", "pattern": "pakka\\s+(profit|munafa|return)", "why": "Return promise"},
+    {"id": "P4", "pattern": "sure[\\s-]?shot", "why": "Sure-shot claim"},
+    {"id": "P5", "pattern": "100\\s?%", "why": "Accuracy or certainty claim"},
+    {"id": "P6", "pattern": "(assured|fixed|guaranteed)\\s+(return|income|profit)", "why": "Assured return"},
+    {"id": "P7", "pattern": "(zaroor|pakka)\\s+(munafa|kamai|profit)", "why": "Return promise"},
+    {"id": "P8", "pattern": "पक्का\\s+मुनाफ़?ा", "why": "Return promise (Hindi)"},
+    {"id": "P9", "pattern": "accuracy", "why": "Accuracy claim"},
+    {"id": "P10", "pattern": "(double|dugna)\\s+(your|aapka|paisa|money)", "why": "Return promise"}
+  ],
+  "hard": [
+    {"id": "H1", "pattern": "\\b\\d{4,6}\\s?(ce|pe)\\b", "why": "Strike price named"},
+    {"id": "H2", "pattern": "\\b(buy|sell|kharid(o|lo|iye|en)?|bech(o|do|iye|en)?|le\\s?lo|lelo)\\b[^.?!\\n]{0,25}\\b(nifty|bank\\s?nifty|sensex|finnifty|stock|share|call|put|option|future|ce|pe)\\b", "why": "Buy / sell a named instrument"},
+    {"id": "H3", "pattern": "\\b(nifty|bank\\s?nifty|sensex|finnifty)\\b[^.?!\\n]{0,25}\\b(buy|sell|kharid|bech|le\\s?lo|lelo)\\b", "why": "Buy / sell a named instrument"},
+    {"id": "H4", "pattern": "\\b(target|tgt)\\s*[:=@-]?\\s*\\d{2,}", "why": "Target level given"},
+    {"id": "H5", "pattern": "\\b(sl|stop[\\s-]?loss)\\s*[:=@-]?\\s*(at|par|pe)?\\s*\\d{2,}", "why": "Stop-loss level given"},
+    {"id": "H6", "pattern": "\\bentry\\s*(above|below|at|@|par|pe)?\\s*[:=-]?\\s*\\d{2,}", "why": "Entry level given"},
+    {"id": "H7", "pattern": "(upar|neeche)\\s+(jayega|jaayega|jaega)\\s*(hi|pakka|zaroor)", "why": "Direction prediction"},
+    {"id": "H8", "pattern": "\\b(best|no\\.?\\s?1|number\\s+one|leading|top)\\s+(research|service|advis\\w*|analyst|company|plan|tips?)\\b", "why": "Superlative about TG Level"},
+    {"id": "H9", "pattern": "offer\\s+(sirf|only)\\s+(aaj|today)", "why": "Fake urgency"},
+    {"id": "H10", "pattern": "\\b(last|limited)\\s+(seats?|slots?)\\b", "why": "Fake urgency"}
+  ],
+  "warn": [
+    {"id": "W1", "pattern": "\\b(tum|tumhe|tumko|tumhara|tumhari|tumhare)\\b", "why": "Uses 'tum' - always 'aap'"},
+    {"id": "W2", "pattern": "\\b(baby|dear|jaan|darling|sweetheart)\\b", "why": "Romantic word"},
+    {"id": "W3", "pattern": "(chai pi|khana kha|office mein hoon|ghar ja rahi|thak gayi)", "why": "Invented human life"}
+  ],
+  "denial_words": ["nahi", "nahin", "not", "no ", "never", "cannot", "can't", "koi bhi", "नहीं", "न ", "mat"]
+}
