@@ -34,14 +34,14 @@ SYSTEM = """TASK: UNDERSTAND
 You label ONE customer message for TG Level's assistant. You do not reply to him.
 Return ONLY a JSON object with this shape:
 {"language": "hinglish|hindi|english",
- "labels": {"<label>": {"on": true|false, "evidence": "<exact words from the message>", "confidence": 0.0-1.0}, ...},
+ "on": [{"label": "<label>", "evidence": "<exact words from the message>", "confidence": 0.0-1.0}],
  "topics": ["short topic words"],
  "negation": "<what he explicitly does NOT want now, in his words, or empty>",
  "new_facts": [{"field": "<field>", "value": "<short value>", "his_words": "<exact words>", "stated": true, "confidence": 0.0-1.0}],
  "mood": "positive|neutral|cautious|frustrated|upset",
  "complexity": "simple|detailed"}
 
-Labels (include every one, on=false when absent):
+Labels — list in "on" ONLY the labels that apply (often none: []):
 - small_talk: chat not about trading or the service (greetings, how are you, chai, good night).
 - education_question: asks to learn a trading or market concept (stop-loss, options, risk, how to read an alert).
 - support_question: app, alerts, notifications, login, payment, access, installation problems or how-to.
@@ -64,6 +64,28 @@ Facts: only what he states about HIMSELF, explicitly. Allowed fields:
 Never infer facts he did not say. "evidence" and "his_words" must be copied exactly from his message.
 complexity = detailed only when the question needs a multi-step explanation of a concept.
 Earlier messages are context only; label the LAST customer message."""
+
+# Only the labels that apply are listed: a short answer (fast), and small enough for structured outputs
+_ON = {"type": "object", "additionalProperties": False,
+       "properties": {"label": {"type": "string", "enum": YES_NO_LABELS}, "evidence": {"type": "string"},
+                      "confidence": {"type": "number"}},
+       "required": ["label", "evidence", "confidence"]}
+_FACT = {"type": "object", "additionalProperties": False,
+         "properties": {"field": {"type": "string", "enum": list(FACT_FIELDS)}, "value": {"type": "string"},
+                        "his_words": {"type": "string"}, "stated": {"type": "boolean"},
+                        "confidence": {"type": "number"}},
+         "required": ["field", "value", "his_words", "stated", "confidence"]}
+# The answer's shape, enforced by the provider where it can (structured outputs) — same as the SYSTEM text above
+SCHEMA = {"type": "object", "additionalProperties": False,
+          "properties": {
+              "language": {"type": "string", "enum": ["hinglish", "hindi", "english"]},
+              "on": {"type": "array", "items": _ON},
+              "topics": {"type": "array", "items": {"type": "string"}},
+              "negation": {"type": "string"},
+              "new_facts": {"type": "array", "items": _FACT},
+              "mood": {"type": "string", "enum": ["positive", "neutral", "cautious", "frustrated", "upset"]},
+              "complexity": {"type": "string", "enum": ["simple", "detailed"]}},
+          "required": ["language", "on", "topics", "negation", "new_facts", "mood", "complexity"]}
 
 
 def detect_language(text: str) -> str:
@@ -98,7 +120,11 @@ def normalise(data: dict, text: str) -> dict:
     if out["language"] == "hindi" and not re.search(r"[ऀ-ॿ]", text):
         out["language"] = "hinglish"       # Hindi words in Roman script = Hinglish
     min_conf = S.get("label_confidence_min", 0.6)
-    labels = data.get("labels") or {}
+    labels = data.get("labels") or {}           # every label with on true/false (mock, older answers)
+    for item in data.get("on") or []:            # only the labels that apply (current prompt)
+        if isinstance(item, dict) and item.get("label") in YES_NO_LABELS:
+            labels[item["label"]] = {"on": True, "evidence": item.get("evidence", ""),
+                                     "confidence": item.get("confidence", 0)}
     for k in YES_NO_LABELS:
         v = labels.get(k) or {}
         try:
@@ -134,7 +160,7 @@ def understand(llm, text: str, history: list):
     ctx.append({"role": "user", "content": f"LAST CUSTOMER MESSAGE:\n{text}"})
     res = llm.call("understand", "fast", SYSTEM, ctx, json_mode=True,
                    temperature=S.get("temperature_understand", 0.0),
-                   timeout=S.get("timeout_understand_seconds", 20), max_tokens=900)
+                   timeout=S.get("timeout_understand_seconds", 20), max_tokens=900, schema=SCHEMA)
     if not res.ok:
         return defaults(text), res
     return normalise(res.data, text), res

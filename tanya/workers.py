@@ -278,6 +278,9 @@ Summarise ONE finished chat session between a customer and Ms Tanya (TG Level's 
 Use ONLY delivered messages. Never invent. Return ONLY JSON:
 {"note": ["3 short lines: what he asked / shared, what was taught, what was agreed"],
  "last_promise": "<the next step she promised, or empty>"}"""
+NOTE_SCHEMA = {"type": "object", "additionalProperties": False,
+               "properties": {"note": {"type": "array", "items": {"type": "string"}}, "last_promise": {"type": "string"}},
+               "required": ["note", "last_promise"]}
 
 
 def close_idle_sessions(store, llm, adapter, now=None):
@@ -297,7 +300,7 @@ def close_idle_sessions(store, llm, adapter, now=None):
             continue
         convo = "\n".join(f"{m['role']}: {m['text']}" for m in msgs)
         res = llm.call("note", "fast", NOTE_SYSTEM, [{"role": "user", "content": convo}], json_mode=True,
-                       temperature=0.0, timeout=30, max_tokens=500)
+                       temperature=0.0, timeout=30, max_tokens=500, schema=NOTE_SCHEMA)
         note = res.data.get("note", []) if res.ok else ["(note failed — see transcript)"]
         rec["session_notes"].append({"session": s["id"], "at": iso(now), "lines": note})
         rec["session_notes"] = rec["session_notes"][-10:]
