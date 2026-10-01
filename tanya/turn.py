@@ -71,7 +71,7 @@ def n_load(st):
 # ------------------------------------------------------------------ gate
 def n_gate(st):
     rec, now = st["rec"], st["now"]
-    g, line, reason = policy.gate(rec, st["store"], now, st["injection"])
+    g, line, reason = policy.gate(rec, st["store"], now, st["injection"], st.get("masked", ""))
     st["limited"] = st["store"].killswitch() == "limited"
     if st["kind"] == "app_open" and g == policy.GATE_GO:
         last_greet = rec["journey"].get("greeted_at")

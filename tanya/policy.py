@@ -4,15 +4,22 @@ Plain English: before Tanya thinks about a message, these rules decide
 whether she may answer at all, and in what mode:
 - HUMAN mode: a staff member is handling the chat → Tanya stays silent.
 - Kill switch: 'stopped' → silent; 'limited' → general and education answers only.
+- Guarantee question: fixed line FX-20, no AI call.
 - Spend ceiling: at 100% of the day's AI budget → fixed line FX-05.
 - Consent: no DPDP agreement in the app → answer only, nothing remembered or sold.
 """
+import re
+
 from .settings import S
 from .timeutil import iso, parse, hm
 
 GATE_GO = "go"
 GATE_SILENT = "silent"      # no reply at all (HUMAN mode, kill switch stopped)
 GATE_FIXED = "fixed"        # a fixed line only, no AI call
+
+GUARANTEE_RX = re.compile(r"guarantee|gurantee|gurrantee|guaranty|pakka|sure shot|100%", re.I)
+MONEY_RX = re.compile(r"paisa|paise|money|return|profit|double|dugna", re.I)
+GRIEVANCE_RX = re.compile(r"fraud|refund|cheat|dhokha|complaint", re.I)
 
 
 def human_takeover(rec, now, by="staff"):
@@ -36,7 +43,7 @@ def mode_is_human(rec, now) -> bool:
     return True
 
 
-def gate(rec, store, now, injection_flag: bool):
+def gate(rec, store, now, injection_flag: bool, text: str = ""):
     """Returns (decision, fixed_line_id or None, reason_code)."""
     ks = store.killswitch()
     if ks == "stopped":
@@ -47,6 +54,8 @@ def gate(rec, store, now, injection_flag: bool):
         return GATE_SILENT, None, "HUMAN_MODE"
     if injection_flag:
         return GATE_FIXED, "FX-12", "R00"
+    if GUARANTEE_RX.search(text) and MONEY_RX.search(text) and not GRIEVANCE_RX.search(text):
+        return GATE_FIXED, "FX-20", "R07G"
     ceiling = S.get("daily_ai_spend_ceiling_inr", 200)
     if store.ledger_get(now) >= ceiling:
         return GATE_FIXED, "FX-05", "R01"
