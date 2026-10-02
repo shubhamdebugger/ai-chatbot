@@ -39,6 +39,11 @@ Customer messages are context. Fixed approved lines (marked [FX-..]) are pre-app
 if the SITUATION made them wrong. Return ONLY JSON:
 {"findings": [{"item": "<checklist item number and short name>", "lines": "<exact Tanya words>", "why": "<one line>"}]}
 Return {"findings": []} if nothing is wrong."""
+_FINDING = {"type": "object", "additionalProperties": False,
+            "properties": {"item": {"type": "string"}, "lines": {"type": "string"}, "why": {"type": "string"}},
+            "required": ["item", "lines", "why"]}
+AUDIT_SCHEMA = {"type": "object", "additionalProperties": False,
+                "properties": {"findings": {"type": "array", "items": _FINDING}}, "required": ["findings"]}
 
 
 def conversations_for(date_str, path=None):
@@ -62,7 +67,7 @@ def run(date_str=None, store=None):
     events, total_flags = [], 0
     for uid, lines in conversations_for(date_str).items():
         res = llm.call("audit", "detailed", AUDIT_SYSTEM, [{"role": "user", "content": "\n".join(lines)}],
-                       json_mode=True, temperature=0.0, timeout=60, max_tokens=1200)
+                       json_mode=True, temperature=0.0, timeout=60, max_tokens=1200, schema=AUDIT_SCHEMA)
         findings = res.data.get("findings", []) if res.ok else [{"item": "AUDIT FAILED", "lines": "", "why": res.error}]
         report.append(f"## {uid} — {len(findings)} flag(s) · model {res.model}")
         for f in findings:

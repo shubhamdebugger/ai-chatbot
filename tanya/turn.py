@@ -22,7 +22,7 @@ from .guard_input import injection, mask
 from .guard_output import ai_check, amounts, approved_text_for, emoji_rule, net
 from .handoff import open_case, request_callback, two_slots, when_phrase
 from .knowledge import is_placeholder
-from .prompts import build
+from .prompts import REPLY_SCHEMA, build
 from .scoring import temperature
 from .settings import S
 from .timeutil import iso, parse, stamp
@@ -225,7 +225,7 @@ def n_compose(st):
             msgs = msgs + [{"role": "user", "content": "(he opened the app)"}]
         res = st["llm"].call("reply", d.tier, system, msgs, json_mode=True,
                              temperature=S.get("temperature_reply", 0.4),
-                             timeout=S.get("timeout_reply_seconds", 40), max_tokens=900)
+                             timeout=S.get("timeout_reply_seconds", 40), max_tokens=900, schema=REPLY_SCHEMA)
         _usage(st, res)
         st["golden_used"] = ex_ids
         reply = (res.data or {}).get("reply", "").strip() if res.ok else ""

@@ -52,6 +52,12 @@ ACTION_TEXT = {
 }
 
 
+REPLY_SCHEMA = {"type": "object", "additionalProperties": False,
+                "properties": {"reply": {"type": "string"}, "last_promise": {"type": "string"},
+                               "asked_field": {"type": "string"}},
+                "required": ["reply", "last_promise", "asked_field"]}
+
+
 def _promise_or_step(rec, day):
     p = rec["journey"].get("last_promise")
     if p:
