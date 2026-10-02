@@ -13,7 +13,7 @@ YES_NO_LABELS = [
     "small_talk", "education_question", "support_question", "trade_advice_seeking",
     "distress", "grievance", "wants_person", "purchase_intent", "interest",
     "timing_objection", "prefers_call", "abuse", "flirting", "asks_if_ai",
-    "not_helpful", "refers_to_past",
+    "not_helpful", "refers_to_past", "asks_guarantee",
 ]
 
 FACT_FIELDS = {
@@ -46,6 +46,7 @@ Labels — list in "on" ONLY the labels that apply (often none: []):
 - education_question: asks to learn a trading or market concept (stop-loss, options, risk, how to read an alert).
 - support_question: app, alerts, notifications, login, payment, access, installation problems or how-to.
 - trade_advice_seeking: wants a view on market direction, an entry/exit/target/stop-loss level, which strike or stock to buy or sell, or whether to take a specific alert. NOT a concept question, NOT buying the plan.
+- asks_guarantee: asks whether returns, profit or money doubling is guaranteed or sure-shot ("guarantee hai?", "pakka profit?", "paise double honge?").
 - distress: heavy or painful money loss, despair, panic, fear — including a calm mention of a big past loss.
 - grievance: complaint about TG Level's service, refund demand, calling it fraud or cheating.
 - wants_person: asks to talk to a human / agent / team member.
@@ -96,6 +97,19 @@ def detect_language(text: str) -> str:
     if re.search(hinglish_markers, (text or "").lower()):
         return "hinglish"
     return "english"
+
+
+GUARANTEE_WORDS = ("guarantee", "gurantee", "gurrantee", "guaranty", "pakka",
+                   "sure shot", "100%", "double", "dugna")
+
+
+def _guarantee_backup(labels: dict, text: str) -> dict:
+    """Keyword backup: the label turns on even when the AI misses it."""
+    low = (text or "").lower()
+    hit = next((w for w in GUARANTEE_WORDS if w in low), "")
+    if hit and not labels["labels"]["asks_guarantee"]["on"]:
+        labels["labels"]["asks_guarantee"] = {"on": True, "evidence": hit, "confidence": 1.0}
+    return labels
 
 
 def defaults(text: str) -> dict:
@@ -162,5 +176,5 @@ def understand(llm, text: str, history: list):
                    temperature=S.get("temperature_understand", 0.0),
                    timeout=S.get("timeout_understand_seconds", 20), max_tokens=900, schema=SCHEMA)
     if not res.ok:
-        return defaults(text), res
-    return normalise(res.data, text), res
+        return _guarantee_backup(defaults(text), text), res
+    return _guarantee_backup(normalise(res.data, text), text), res

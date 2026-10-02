@@ -14,12 +14,14 @@ from .settings import S
 
 # Actions whose whole reply is a fixed line (no AI writing)
 FIXED_ONLY = {"LIMIT_SPEND", "BOUNDARY_ABUSE", "HAND_OVER_PERSON", "LIMIT_EDUCATION",
-              "HAND_OVER_PURCHASE", "BOOK_CALL", "ASKS_IF_AI", "BOUNDARY_FIRM", "LIMITED_MODE"}
+              "HAND_OVER_PURCHASE", "BOOK_CALL", "ASKS_IF_AI", "BOUNDARY_FIRM", "LIMITED_MODE",
+              "ANSWER_GUARANTEE"}
 # Actions that count toward the 30 education questions
 COUNTS_AS_EDUCATION = {"ANSWER_EDUCATION"}
 # Actions where emoji are not allowed (Personality Guide §3.5)
 NO_EMOJI = {"PAUSE_SELLING", "LOG_GRIEVANCE", "BOUNDARY_ABUSE", "REFUSE_AND_TEACH", "HAND_OVER_PERSON",
-            "HAND_OVER_PURCHASE", "ANSWER_PRICE", "LIMIT_SPEND", "LIMIT_EDUCATION", "BOUNDARY_FIRM"}
+            "HAND_OVER_PURCHASE", "ANSWER_PRICE", "LIMIT_SPEND", "LIMIT_EDUCATION", "BOUNDARY_FIRM",
+            "ANSWER_GUARANTEE"}
 
 
 @dataclass
@@ -63,6 +65,9 @@ def decide(labels: dict, rec: dict, now, limited: bool = False) -> Decision:
     # Row 7 — trade advice: refuse and teach (SEBI guard layer 1)
     if _on(labels, "trade_advice_seeking"):
         return Decision("REFUSE_AND_TEACH", "R07", fixed_line="FX-03", tier="fast")
+    # Row 7G — money-guarantee question: fixed compliance line, no AI words
+    if _on(labels, "asks_guarantee"):
+        return Decision("ANSWER_GUARANTEE", "R07G", fixed_line="FX-20")
     # Kill switch 'limited': general and education only (Architecture §7.5)
     if limited and (_on(labels, "purchase_intent") or _on(labels, "interest") or _on(labels, "support_question")):
         return Decision("LIMITED_MODE", "R-LIMITED", fixed_line="FX-06")

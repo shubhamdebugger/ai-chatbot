@@ -290,6 +290,18 @@ def trade_question_turn_refused():
 
 
 @test
+def guarantee_question_gives_fixed_line():
+    s = fresh_store()
+    st = turn(s, "U1001", "gurrantee hai ki mere paise double hojaaenge")
+    ids = [b["id"] for b in st["bubbles"]]
+    assert "FX-20" in ids and st["trace"]["action"] == "FIXED_GATE" \
+        and st["trace"]["reason"] == "R07G", st["trace"]
+    assert st["llm_calls"] == [], st["llm_calls"]
+    d = decide(labels_with(asks_guarantee=True), rec_for(), NIGHT)   # backup row still works
+    assert d.action == "ANSWER_GUARANTEE" and d.fixed_line == "FX-20", d
+
+
+@test
 def human_mode_silences_tanya():
     s = fresh_store()
     turn(s, "U1001", "Hello")
