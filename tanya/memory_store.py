@@ -125,8 +125,11 @@ class RedisStore:
         import redis
         # socket_timeout must stay above the longest blocking wait (loader BLPOP 5 s), else an empty
         # queue raises TimeoutError; health checks keep idle connections to a cloud Redis alive.
+        # REDIS_CONNECT_TIMEOUT_SECONDS: the gateway sets 2 s so a Redis outage answers the CRM fast (503) instead
+        # of holding the customer's "Sending..." (the reconciler recovers the message later).
         self.r = redis.Redis.from_url(url or S.env("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True,
-                                      socket_timeout=30, socket_connect_timeout=10, health_check_interval=30)
+                                      socket_timeout=30, health_check_interval=30,
+                                      socket_connect_timeout=float(S.env("REDIS_CONNECT_TIMEOUT_SECONDS", "10")))
 
     def get(self, user_id):
         raw = self.r.get(f"tanya:rec:{user_id}")

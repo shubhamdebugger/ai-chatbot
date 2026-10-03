@@ -141,6 +141,19 @@ class StreamWorker:
                 for msg_id, fields in claimed:
                     self._handle(s, msg_id, fields)
 
+    def _resume_own_pending(self):
+        """A restarted worker keeps its consumer name: re-run its own unfinished jobs at once instead of waiting
+        reclaim_idle_seconds (a killed worker answered only after ~60 s). Safe: done/posted markers stop repeats."""
+        try:
+            resp = self.r.xreadgroup(self.group, self.consumer, {s: "0" for s in self.streams}, count=100)
+            for stream, msgs in resp or []:
+                for msg_id, fields in msgs:
+                    if fields:                          # empty = entry trimmed / acknowledged elsewhere
+                        print(f"[stream] {self.consumer} resuming own pending {stream} {msg_id}", file=sys.stderr, flush=True)
+                        self._handle(stream, msg_id, fields)
+        except Exception as e:
+            print(f"[stream] resume failed {type(e).__name__}: {str(e)[:120]}", file=sys.stderr, flush=True)
+
     def run_once(self, block_ms=2000, count=10) -> int:
         resp = self.r.xreadgroup(self.group, self.consumer, {s: ">" for s in self.streams}, count=count, block=block_ms)
         n = 0
@@ -155,6 +168,7 @@ class StreamWorker:
         command) and recreates the consumer group if Redis lost it. Pending jobs of a crashed worker are
         reclaimed every 5 s once idle for reclaim_idle_seconds."""
         last_reclaim, delay = 0, 1
+        self._resume_own_pending()
         while True:
             try:
                 self.run_once()

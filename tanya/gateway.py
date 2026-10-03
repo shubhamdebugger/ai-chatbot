@@ -9,6 +9,7 @@ Plain English:
 - /dev/...     : the developer console (RUN_MODE=dev or DEV_CONSOLE=1) to chat with Tanya without the CRM.
 """
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -29,6 +30,7 @@ from . import timeutil
 from .workers import TurnHandler, close_idle_sessions, seed_dev, seed_server_factory
 
 app = FastAPI(title="Ms Tanya — AI Gateway (Python reference)", version="1.0-frame")
+os.environ.setdefault("REDIS_CONNECT_TIMEOUT_SECONDS", "2")   # gateway: fail fast, never hold the CRM
 store = make_store()
 llm = LLM()
 kb = KnowledgeIndex()
@@ -117,11 +119,6 @@ async def webhook(request: Request):
 
 def _webhook(payload, headers):
     ev = adapter.parse_webhook(payload, headers)
-    if SERVER and ev is not None:
-        try:
-            store.r.set("tanya:metrics:webhook_last", int(time.time()))
-        except Exception:
-            pass
     if ev is None:
         return 200, {"ok": False, "ignored": True}, None
     if ev.kind == "staff_message":                                   # HUMAN at once (v4 step 6)
@@ -132,7 +129,9 @@ def _webhook(payload, headers):
              "conversation_id": ev.conversation_id, "text": ev.text,
              "received_ms": int(time.time() * 1000), "source": "webhook"}
     if SERVER:
-        return 200, {"ok": True, "queued": intake.enqueue(event)}, ev
+        queued = intake.enqueue(event)                              # Redis down -> raises -> 503 at once
+        store.r.set("tanya:metrics:webhook_last", int(time.time()))   # monitoring, only after a good enqueue
+        return 200, {"ok": True, "queued": queued}, ev
     dev_handler.adapter = adapter
     dev_handler(event)                                               # dev: process inline
     return 200, {"ok": True}, ev
