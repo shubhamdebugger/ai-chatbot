@@ -51,6 +51,8 @@ def n_load(st):
         if seed is None:                       # not in memory and not loaded yet (Architecture §7.7.5)
             seed, st["cold_start"] = {"consent": False}, True
         rec = mm.new_record(uid, seed, now)
+    if st.get("conversation_id"):              # the CRM chat this event belongs to: the HUMAN gate and
+        rec["conversation_id"] = str(st["conversation_id"])   # replies must use it, not the user id
     st["rec"] = rec
     st["new_session"] = mm.ensure_session(rec, now)
     mm.ensure_day(rec, now)
@@ -62,7 +64,8 @@ def n_load(st):
         st["msg_no"] = mm.add_message(rec, "user", masked, now, meta={"masked": kinds, "event_id": st.get("event_id")})
         rec["session"]["user_msgs"] += 1
         rec["counters"]["user_msgs_total"] += 1
-        _ev(st, "message", role="user", n=st["msg_no"], text=masked, event_id=st.get("event_id"))
+        _ev(st, "message", role="user", n=st["msg_no"], text=masked, event_id=st.get("event_id"),
+            conversation_id=rec["conversation_id"])
     else:
         st["masked"], st["masked_kinds"], st["injection"], st["msg_no"] = "", [], False, None
     return st

@@ -43,12 +43,23 @@ class CRMAdapter:
     def get_conversation(self, conversation_id: str, limit: int = 30) -> list:
         raise NotImplementedError
 
+    def staff_replied_after(self, conversation_id: str, after_message_id) -> bool:
+        """True if a staff member (agent/admin, not Tanya) wrote in this chat after the given CRM message.
+        Read from the CRM itself just before posting, so a staff reply whose webhook has not arrived yet
+        still stops Tanya (pressure test K3 / PT6)."""
+        return False
+
+    def own_message_saved(self, conversation_id: str, after_message_id, text: str) -> bool:
+        """True if Tanya's message with this text is already in the chat after the given CRM message:
+        an earlier post was saved by the CRM even though its response was lost (PT4 / Spec 8.2 item 6)."""
+        return False
+
     def get_user(self, user_id: str) -> dict:
         """Profile fields, including DPDP consent status and trial dates (A5, B3)."""
         raise NotImplementedError
 
-    def read_notes(self, user_id: str) -> list:
-        """Agent notes (read only) and Tanya's own brief (A4)."""
+    def read_notes(self, conversation_id: str) -> list:
+        """Agent notes (read only) and Tanya's own brief for a conversation."""
         raise NotImplementedError
 
     def write_tanya_brief(self, user_id: str, conversation_id: str, text: str) -> str:
@@ -80,10 +91,13 @@ class ConsoleAdapter(CRMAdapter):
     def get_conversation(self, conversation_id, limit=30):
         return self.outbox.get(conversation_id, [])[-limit:]
 
+    def own_message_saved(self, conversation_id, after_message_id, text):
+        return text in self.outbox.get(conversation_id, [])
+
     def get_user(self, user_id):
         return {}
 
-    def read_notes(self, user_id):
+    def read_notes(self, conversation_id: str):
         return []
 
     def write_tanya_brief(self, user_id, conversation_id, text):
@@ -139,11 +153,13 @@ class SupportBoardAdapter(CRMAdapter):
             return IntakeEvent(str(data.get("id", "")), "status_change", str(data.get("user_id", "")),
                                str(data.get("conversation_id", "")), "", payload)
         sender = str(data.get("user_id", ""))
-        if sender == self.tanya_agent:
+        conv_user = str(data.get("conversation_user_id") or sender)
+        if sender and sender == self.tanya_agent:
             return None                                     # our own reply echoed back — ignore
-        kind = "staff_message" if str(data.get("user_type", "")) in ("agent", "admin") else "user_message"
+        is_staff = (sender != conv_user) or (str(data.get("user_type", "")) in ("agent", "admin"))
+        kind = "staff_message" if is_staff else "user_message"
         return IntakeEvent(event_id=str(data.get("message_id") or data.get("id")), kind=kind,
-                           user_id=str(data.get("conversation_user_id") or sender),
+                           user_id=conv_user,
                            conversation_id=str(data.get("conversation_id")),
                            text=str(data.get("message", "")), raw=payload)
 
@@ -156,19 +172,52 @@ class SupportBoardAdapter(CRMAdapter):
         msgs = res.get("messages", []) if isinstance(res, dict) else []
         return msgs[-limit:]
 
+    def staff_replied_after(self, conversation_id, after_message_id):
+        try:
+            after = int(after_message_id)
+        except (TypeError, ValueError):
+            return False                                    # no CRM message id (e.g. app_open): nothing to compare
+        for m in self.get_conversation(conversation_id, limit=30):
+            if (str(m.get("user_type")) in ("agent", "admin") and str(m.get("user_id")) != self.tanya_agent
+                    and int(m.get("id", 0)) > after):
+                return True
+        return False
+
+    def own_message_saved(self, conversation_id, after_message_id, text):
+        try:
+            after = int(after_message_id)
+        except (TypeError, ValueError):
+            after = 0
+        norm = lambda s: " ".join(str(s or "").split())     # the CRM strips \r, \t and extra blank lines
+        return any(str(m.get("user_id")) == self.tanya_agent and int(m.get("id", 0)) > after
+                   and norm(m.get("message")) == norm(text) for m in self.get_conversation(conversation_id, limit=30))
+
     def get_user(self, user_id):
         return self._call("user", user_id=user_id, extra="true")   # TO CONFIRM (A5): field names
 
-    def read_notes(self, user_id):
-        return self._call("notes_list", user_id=user_id)             # TO CONFIRM (A4)
+    def read_notes(self, conversation_id: str):
+        if not conversation_id:
+            return []
+        res = self._call("notes_list", conversation_id=conversation_id)
+        return res if isinstance(res, list) else []
 
     def write_tanya_brief(self, user_id, conversation_id, text):
-        """Only Tanya's own note. The note id is kept in her memory; she never edits another id."""
-        # TODO (CODER D, A4): if separate note records are supported → add once, then update by own id;
-        # else write to a user extra field reserved for Tanya (Architecture §9.3.2).
-        res = self._call("note_add", conversation_id=conversation_id, user_id=self.tanya_agent,
-                         name="Ms Tanya — Lead Brief (auto)", message=text)
-        return str(res)
+        """Only Tanya's own note. Updates existing brief note if present, else creates new."""
+        notes = self.read_notes(conversation_id)
+        existing_note_id = None
+        if isinstance(notes, list):
+            for n in notes:
+                if isinstance(n, dict) and n.get("name") == "Ms Tanya — Lead Brief (auto)":
+                    existing_note_id = n.get("id")
+                    break
+        if existing_note_id:
+            res = self._call("note_update", conversation_id=conversation_id, user_id=self.tanya_agent,
+                             note_id=existing_note_id, message=text)
+            return str(existing_note_id)
+        else:
+            res = self._call("note_add", conversation_id=conversation_id, user_id=self.tanya_agent,
+                             name="Ms Tanya — Lead Brief (auto)", message=text)
+            return str(res)
 
     def hand_to_human(self, conversation_id, reason):
         self._call("department", conversation_id=conversation_id, department=self.human_dept)

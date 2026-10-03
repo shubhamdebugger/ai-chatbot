@@ -53,42 +53,114 @@ class TurnHandler:
         kind = event.get("kind", "user_message")
         if kind == "staff_message":
             return self._staff(event)
-        for attempt in range(3):                      # redo the turn if a newer version was saved meanwhile
-            try:
-                st = run_turn({"user_id": event["user_id"], "kind": "app_open" if kind == "app_open" else "message",
-                               "text": event.get("text", ""), "event_id": event.get("event_id"), "now": tnow(),
-                               "store": self.store, "llm": self.llm, "kb": self.kb, "seed_fn": self.seed_fn})
-                break
-            except VersionConflict:
-                time.sleep(0.2 * (attempt + 1))
+        if self._marked(event, "done"):               # a reclaimed job whose turn was already delivered (PT5)
+            return None
+        retry = self._retry_get(event)
+        if retry:                                     # earlier post failed: post the saved reply, don't think again
+            st, conv = None, retry["conversation_id"]
+            post_failed = self._post_bubbles(conv, retry["bubbles"], event, reconcile=True)[1]
         else:
-            raise RuntimeError("version conflict 3 times")
-        self._deliver(st, event)
+            for attempt in range(3):                  # redo the turn if a newer version was saved meanwhile
+                try:
+                    st = run_turn({"user_id": event["user_id"], "kind": "app_open" if kind == "app_open" else "message",
+                                   "text": event.get("text", ""), "event_id": event.get("event_id"),
+                                   "conversation_id": event.get("conversation_id"), "now": tnow(),
+                                   "store": self.store, "llm": self.llm, "kb": self.kb, "seed_fn": self.seed_fn})
+                    break
+                except VersionConflict:
+                    time.sleep(0.2 * (attempt + 1))
+            else:
+                raise RuntimeError("version conflict 3 times")
+            conv, post_failed = self._deliver(st, event)
+        if post_failed and self._retry_set(event, conv, post_failed):
+            # not acknowledged: the reclaimer retries it, and after the last attempt it goes to the dead letter (PT3)
+            raise RuntimeError(f"POST_FAILED: {len(post_failed)} bubble(s) not accepted by the CRM")
+        self._retry_clear(event)
+        self._mark(event, "done")
         return st
+
+    def _retry_get(self, event):
+        r = getattr(self.store, "r", None)
+        raw = r.get(f"tanya:retry:{event['event_id']}") if r is not None and event.get("event_id") else None
+        return json.loads(raw) if raw else None
+
+    def _retry_set(self, event, conv, bubbles):
+        r = getattr(self.store, "r", None)
+        if r is None or not event.get("event_id"):
+            return False
+        r.set(f"tanya:retry:{event['event_id']}", json.dumps({"conversation_id": conv, "bubbles": bubbles},
+                                                              ensure_ascii=False), ex=86400)
+        return True
+
+    def _retry_clear(self, event):
+        r = getattr(self.store, "r", None)
+        if r is not None and event.get("event_id"):
+            r.delete(f"tanya:retry:{event['event_id']}")
+
+    def _marked(self, event, what):
+        r = getattr(self.store, "r", None)
+        return bool(r is not None and event.get("event_id") and r.exists(f"tanya:{what}:{event['event_id']}"))
+
+    def _mark(self, event, what):
+        r = getattr(self.store, "r", None)
+        if r is not None and event.get("event_id"):
+            r.set(f"tanya:{what}:{event['event_id']}", "1", ex=86400)
 
     def _deliver(self, st, event):
         """Post each bubble; if HUMAN mode started meanwhile, post nothing and mark undelivered."""
         rec = st["rec"]
         conv = event.get("conversation_id") or rec["conversation_id"]
-        failed = []
-        for b in st["bubbles"]:
-            if self.store.human_flag(conv, tnow()):
-                failed.append(b)
-                continue
-            try:
-                self.adapter.post_message(conv, b["text"])
-            except Exception:
-                failed.append(b)
-        if failed:
-            self._mark_undelivered(st["user_id"], [b["text"] for b in failed])
-        if st["decision"] and st["decision"].action in HANDOVER_ACTIONS:
+        suppressed, post_failed = self._post_bubbles(conv, [[i, b["text"]] for i, b in enumerate(st.get("bubbles") or [])],
+                                                     event)
+        if suppressed or post_failed:
+            self._mark_undelivered(st["user_id"], suppressed + [t for _, t in post_failed])
+        d = st.get("decision")                       # absent when the gate stopped the turn (LangGraph state)
+        if d and d.action in HANDOVER_ACTIONS:
             try:
                 self.adapter.write_tanya_brief(st["user_id"], conv, st["brief"])
-                if st["decision"].action in ("HAND_OVER_PERSON", "LOG_GRIEVANCE"):
-                    self.adapter.hand_to_human(conv, st["decision"].action)
+                if d.action in ("HAND_OVER_PERSON", "LOG_GRIEVANCE"):
+                    self.adapter.hand_to_human(conv, d.action)
             except Exception as e:
                 self.store.emit([{"type": "alert", "user_id": st["user_id"], "at": iso(tnow()),
                                   "kind": "crm_write_failed", "detail": str(e)[:200]}])
+        return conv, post_failed
+
+    def _post_bubbles(self, conv, bubbles, event, reconcile=False):
+        """bubbles = [[index, text], ...]. Returns (texts suppressed for HUMAN mode, [[index, text]] the CRM refused).
+        reconcile: a retry first checks the CRM, because a post whose response was lost may have been saved (PT4)."""
+        suppressed, post_failed = [], []
+        for i, text in bubbles:
+            posted = dict(event, event_id=f"{event.get('event_id')}:{i}") if event.get("event_id") else event
+            if self._marked(posted, "posted"):          # this bubble reached the CRM before a crash: never again
+                continue
+            if reconcile:
+                try:
+                    if self.adapter.own_message_saved(conv, event.get("event_id"), text):
+                        self._mark(posted, "posted")
+                        continue
+                except Exception:
+                    post_failed.append([i, text])       # cannot tell if it was saved: do not risk a duplicate now
+                    continue
+            if self.store.human_flag(conv, tnow()) or self._staff_in_crm(conv, event):
+                suppressed.append(text)
+                continue
+            try:
+                self.adapter.post_message(conv, text)
+                self._mark(posted, "posted")
+            except Exception:
+                post_failed.append([i, text])
+        return suppressed, post_failed
+
+    def _staff_in_crm(self, conv, event):
+        """Staff wrote in the CRM after this customer message but its webhook has not set the flag yet:
+        set HUMAN now and post nothing (K3 / PT6). A failed CRM read does not block the reply."""
+        try:
+            if not self.adapter.staff_replied_after(conv, event.get("event_id")):
+                return False
+        except Exception:
+            return False
+        self.store.set_human_flag(conv, S.get("human_mode_release_hours", 12), tnow())
+        return True
 
     def _mark_undelivered(self, user_id, texts):
         """A reply that never reached him is never remembered as something she said (§7.6.2)."""
@@ -111,7 +183,7 @@ class TurnHandler:
             rec = self.store.get(event["user_id"])
             if rec is None:
                 return
-            human_takeover(rec, tnow(), by="staff")
+            human_takeover(rec, tnow(), by="staff", conversation_id=event.get("conversation_id"))
             mm.add_message(rec, "staff", event.get("text", ""), tnow())
             try:
                 self.store.save(rec)
@@ -141,6 +213,10 @@ class Persister:
                                database=S.env("MYSQL_DB"), charset="utf8mb4", autocommit=False)
 
     def write(self, events):
+        try:
+            self.conn.ping(reconnect=True)          # MySQL restarted or idle-timeout: reconnect, don't fail forever
+        except Exception:
+            self.conn = self._connect()
         with self.conn.cursor() as c:
             for e in events:
                 self._one(c, e)
@@ -235,16 +311,17 @@ def load_from_crm(adapter, user_id) -> dict:
     """Build a seed record from the CRM. TODO (CODER D, A4/A5): map the real field names and parse agent notes."""
     u = adapter.get_user(user_id) or {}
     extra = u.get("extra", {}) if isinstance(u, dict) else {}
+    conversation_id = u.get("conversation_id", user_id)
     seed = {
         "name": u.get("first_name") or u.get("name", ""),                      # TO CONFIRM (A5)
         "consent": str(extra.get("dpdp_consent", "")).lower() in ("1", "yes", "true"),   # TO CONFIRM (B3)
         "trial_start": extra.get("trial_start"),                                 # TO CONFIRM (A5)
         "language": extra.get("language", "hinglish"),
-        "conversation_id": u.get("conversation_id", user_id),
+        "conversation_id": conversation_id,
         "source": "crm",
         "facts": [],
     }
-    for note in adapter.read_notes(user_id) or []:
+    for note in adapter.read_notes(conversation_id) or []:
         # TODO (CODER D + JUNIOR C): agree a simple agent-note format, e.g. lines 'segment: Nifty options'
         text = note.get("message", "") if isinstance(note, dict) else str(note)
         for line in text.splitlines():

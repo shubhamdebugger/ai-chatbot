@@ -199,4 +199,14 @@ class RedisStore:
 
 def make_store():
     """dev → FileStore, server → RedisStore (RUN_MODE in .env)."""
-    return RedisStore() if S.run_mode == "server" else FileStore()
+    if S.run_mode == "server":
+        try:
+            store = RedisStore()
+            store.r.ping()
+            return store
+        except Exception:
+            import sys
+            print("[WARNING] Redis server unavailable. Falling back to FileStore.", file=sys.stderr)
+            return FileStore()
+    return FileStore()
+

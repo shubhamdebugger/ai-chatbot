@@ -47,11 +47,16 @@ def health():
         lg = S.env("USE_LANGGRAPH", "1") != "0"
     except Exception:
         lg = False
+    try:
+        ks = store.killswitch()
+    except Exception:
+        ks = "off"
     return {"ok": True, "run_mode": S.run_mode, "provider": S.provider, "fallback": S.fallback_provider or None,
             "langgraph": lg, "knowledge_chunks": len(kb.chunks), "vectors": kb.has_vectors,
-            "vector_store": "qdrant" if kb.qdrant else ("memory" if kb.has_vectors else "none"),
-            "qdrant_error": kb.qdrant_error or None,
-            "content_version": PACK.version_string(), "killswitch": store.killswitch()}
+            "vector_store": "qdrant" if getattr(kb, "qdrant", None) else ("memory" if kb.has_vectors else "none"),
+            "qdrant_error": getattr(kb, "qdrant_error", None),
+            "content_version": PACK.version_string(), "killswitch": ks}
+
 
 
 # ------------------------------------------------------------------ CRM webhook
