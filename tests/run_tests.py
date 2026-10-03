@@ -357,6 +357,17 @@ def knowledge_search_finds_lesson():
     assert hits and hits[0]["doc_id"] == "LES-002", hits[:2]
 
 
+@test
+def voice_tool_speaks_only_approved_text():
+    from tanya.knowledge import for_voice
+    out = for_voice(KB.search("SL kya hota hai?"))
+    assert out["found"] and out["results"][0]["title"] == KB.search("SL kya hota hai?")[0]["title"]
+    refund = [h for h in KB.search("refund chahiye") if h["doc_id"] == "FAQ-006"]
+    assert refund, "refund FAQ should be found by search"
+    out = for_voice(refund)
+    assert out == {**out, "found": False, "results": []}, out
+
+
 # ---------------------------------------------------------------- optional: Redis and MySQL
 if os.environ.get("REDIS_URL"):
     @test

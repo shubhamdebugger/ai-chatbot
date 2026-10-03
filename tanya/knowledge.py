@@ -239,3 +239,14 @@ class KnowledgeIndex:
 
 def is_placeholder(hit) -> bool:
     return "PLACEHOLDER" in (hit.get("status") or "").upper() or hit.get("text", "").startswith("[PLACEHOLDER]")
+
+def for_voice(hits):
+    """Search hits shaped for the voice agent's search_knowledge tool (ElevenLabs webhook).
+    Placeholders are dropped, as in the chat path: only approved text is ever spoken."""
+    ok = [h for h in hits if not is_placeholder(h)]
+    return {"found": bool(ok),
+            "results": [{"title": h["title"], "answer": h["text"], "never_say": h["never_say"],
+                         "score": h["score"]} for h in ok],
+            "instruction": "Answer only from these results, in short spoken sentences. Never use a "
+                           "'never_say' phrase. If found is false, say you do not have that information "
+                           "and offer to connect the user with the team."}

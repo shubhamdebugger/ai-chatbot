@@ -5,20 +5,23 @@ Plain English:
                  set HUMAN mode at once for staff replies, drop duplicates, and queue the event.
                  We answer the CRM in milliseconds; the thinking happens in the workers.
 - /events/app  : app events (app opened; later: plan bought, consent changed …) — input B2.
+- /kb/search   : knowledge search for the voice agent (ElevenLabs webhook tool). Needs KB_TOOL_SECRET.
 - /health      : for monitoring.
 - /dev/...     : the developer console (RUN_MODE=dev or DEV_CONSOLE=1) to chat with Tanya without the CRM.
 """
+import hmac
 import json
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from pydantic import BaseModel, Field
 
 from . import memory_model as mm
 from .brief import agent_card
 from .content_pack import PACK
 from .crm_adapter import ConsoleAdapter, make_adapter
-from .knowledge import KnowledgeIndex
+from .knowledge import KnowledgeIndex, for_voice
 from .llm import LLM
 from .memory_store import make_store
 from .settings import ROOT, S
@@ -53,6 +56,21 @@ def health():
             "qdrant_error": kb.qdrant_error or None,
             "content_version": PACK.version_string(), "killswitch": store.killswitch()}
 
+
+# ------------------------------------------------------------------ voice agent knowledge tool
+class KBQuery(BaseModel):
+    query: str = Field(min_length=1, max_length=500)
+    top_k: int | None = Field(default=None, ge=1, le=5)
+
+
+@app.post("/kb/search")
+def kb_search(body: KBQuery, x_tool_secret: str = Header("")):
+    """ElevenLabs 'search_knowledge' webhook tool. Same hybrid search (BM25 + Qdrant) as chat.
+    Plain def, not async: search() makes blocking embedding/Qdrant calls, so FastAPI runs it in a thread."""
+    secret = S.env("KB_TOOL_SECRET")
+    if not secret or not hmac.compare_digest(x_tool_secret, secret):
+        raise HTTPException(401, "invalid tool secret")
+    return for_voice(kb.search(body.query.strip(), top_k=body.top_k))
 
 # ------------------------------------------------------------------ CRM webhook
 @app.post("/webhook/crm")
