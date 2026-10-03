@@ -22,6 +22,7 @@ class TurnState(TypedDict, total=False):
     kind: str
     text: str
     event_id: str
+    conversation_id: str
     now: Any
     store: Any
     llm: Any

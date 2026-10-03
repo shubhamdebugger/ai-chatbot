@@ -36,11 +36,19 @@ class Intake:
 
     def enqueue(self, event: dict) -> bool:
         """event needs event_id, user_id. Returns False for a duplicate."""
-        if event.get("event_id"):
-            if not self.r.set(f"tanya:seen:{event['event_id']}", "1", nx=True, ex=86400):
-                return False
-        self.r.xadd(stream_name(partition(event["user_id"])), {"event": json.dumps(event, ensure_ascii=False)},
-                    maxlen=200_000, approximate=True)
+        seen = f"tanya:seen:{event['event_id']}" if event.get("event_id") else None
+        if seen and not self.r.set(seen, "1", nx=True, ex=86400):
+            return False
+        try:
+            self.r.xadd(stream_name(partition(event["user_id"])), {"event": json.dumps(event, ensure_ascii=False)},
+                        maxlen=200_000, approximate=True)
+        except Exception:
+            if seen:                                # not queued: a retry of this event must not be taken as a duplicate (PT2)
+                try:
+                    self.r.delete(seen)
+                except Exception:
+                    pass
+            raise
         return True
 
 

@@ -311,6 +311,182 @@ def human_mode_silences_tanya():
 
 
 @test
+def human_flag_on_crm_conversation_stops_turn_at_gate():
+    """The CRM conversation id differs from the user id: HUMAN on that chat must stop the turn at the gate."""
+    s = fresh_store()
+    s.set_human_flag("C77", 12, NIGHT)
+    timeutil.set_clock(NIGHT)
+    st = graph.run_turn({"user_id": "U1001", "kind": "message", "text": "Stop-loss kya hota hai?", "now": NIGHT,
+                         "conversation_id": "C77", "store": s, "llm": LLMX, "kb": KB,
+                         "seed_fn": lambda u: PACK.test_users.get(u)})
+    assert st["bubbles"] == [] and st["trace"]["gate"] == "HUMAN_MODE" and st["llm_calls"] == []
+
+
+@test
+def staff_reply_seen_in_crm_blocks_post():
+    """Staff wrote in the CRM after the customer message but its webhook has not arrived yet (PT6)."""
+    from tanya.crm_adapter import ConsoleAdapter
+    from tanya.workers import TurnHandler
+
+    class StaffAlreadyReplied(ConsoleAdapter):
+        def staff_replied_after(self, conversation_id, after_message_id):
+            return True
+    s, a = fresh_store(), StaffAlreadyReplied()
+    timeutil.set_clock(NIGHT)
+    TurnHandler(s, LLMX, KB, a, lambda u: PACK.test_users.get(u))(
+        {"event_id": "501", "kind": "user_message", "user_id": "U1001", "conversation_id": "C88", "text": "Hello"})
+    assert a.outbox.get("C88") is None and s.human_flag("C88", NIGHT)
+
+
+@test
+def worker_delivery_survives_gate_stop():
+    """A turn stopped at the gate (HUMAN) has no decision in the LangGraph state; delivery must not crash."""
+    from tanya.crm_adapter import ConsoleAdapter
+    from tanya.workers import TurnHandler
+    os.environ["USE_LANGGRAPH"] = "1"
+    s, a = fresh_store(), ConsoleAdapter()
+    s.set_human_flag("C99", 12, NIGHT)
+    timeutil.set_clock(NIGHT)
+    TurnHandler(s, LLMX, KB, a, lambda u: PACK.test_users.get(u))(
+        {"event_id": "601", "kind": "user_message", "user_id": "U1001", "conversation_id": "C99", "text": "Hello"})
+    assert a.outbox.get("C99") is None
+
+
+class _FakeR:
+    """Just enough of Redis for SET NX / EXISTS / DELETE / XADD tests."""
+    def __init__(self, fail_xadd=False):
+        self.kv, self.fail_xadd, self.stream = {}, fail_xadd, []
+
+    def set(self, k, v, nx=False, ex=None):
+        if nx and k in self.kv:
+            return None
+        self.kv[k] = v
+        return True
+
+    def exists(self, k):
+        return int(k in self.kv)
+
+    def get(self, k):
+        return self.kv.get(k)
+
+    def delete(self, k):
+        self.kv.pop(k, None)
+
+    def xadd(self, name, fields, **kw):
+        if self.fail_xadd:
+            raise ConnectionError("redis went away")
+        self.stream.append((name, fields))
+
+
+@test
+def enqueue_failure_does_not_mark_event_seen():
+    """PT2: if the job could not be queued, the event must not be remembered as a duplicate."""
+    from tanya.streams import Intake
+    r = _FakeR(fail_xadd=True)
+    try:
+        Intake(r).enqueue({"event_id": "701", "user_id": "U1", "kind": "user_message"})
+        raise AssertionError("enqueue should have raised")
+    except ConnectionError:
+        pass
+    r.fail_xadd = False
+    assert Intake(r).enqueue({"event_id": "701", "user_id": "U1", "kind": "user_message"}) is True and len(r.stream) == 1
+
+
+@test
+def reclaimed_job_is_not_posted_twice():
+    """PT5: the same event handled again (worker crashed before ACK) posts nothing new."""
+    from tanya.crm_adapter import ConsoleAdapter
+    from tanya.workers import TurnHandler
+    s, a = fresh_store(), ConsoleAdapter()
+    s.r = _FakeR()
+    timeutil.set_clock(NIGHT)
+    h = TurnHandler(s, LLMX, KB, a, lambda u: PACK.test_users.get(u))
+    ev = {"event_id": "801", "kind": "user_message", "user_id": "U1001", "conversation_id": "C801", "text": "Hello"}
+    h(dict(ev))
+    first = list(a.outbox["C801"])
+    h(dict(ev))
+    assert first and a.outbox["C801"] == first, a.outbox["C801"]
+
+
+@test
+def crm_post_failure_is_retried_not_completed():
+    """PT3: the CRM refuses the post -> job stays unacknowledged (raises); the retry posts the saved reply once."""
+    from tanya.crm_adapter import ConsoleAdapter
+    from tanya.workers import TurnHandler
+
+    class RejectOnce(ConsoleAdapter):
+        down = True
+
+        def post_message(self, conversation_id, text):
+            if self.down:
+                raise RuntimeError("CRM 401 invalid-token")
+            return super().post_message(conversation_id, text)
+    s, a = fresh_store(), RejectOnce()
+    s.r = _FakeR()
+    timeutil.set_clock(NIGHT)
+    h = TurnHandler(s, LLMX, KB, a, lambda u: PACK.test_users.get(u))
+    ev = {"event_id": "901", "kind": "user_message", "user_id": "U1001", "conversation_id": "C901", "text": "Hello"}
+    try:
+        h(dict(ev))
+        raise AssertionError("a refused post must not be acknowledged")
+    except RuntimeError as e:
+        assert "POST_FAILED" in str(e), e
+    assert not s.r.exists("tanya:done:901") and s.r.exists("tanya:retry:901")
+    a.down = False
+    assert h(dict(ev)) is None                         # retry: posts the saved reply, no new turn
+    assert len(a.outbox["C901"]) >= 1 and s.r.exists("tanya:done:901") and not s.r.exists("tanya:retry:901")
+
+
+@test
+def saved_but_timed_out_post_is_not_duplicated():
+    """PT4: the CRM saves the reply but the response times out; the retry finds it and does not post it again."""
+    from tanya.crm_adapter import ConsoleAdapter
+    from tanya.workers import TurnHandler
+
+    class SavesThenTimesOut(ConsoleAdapter):
+        lose_response = True
+
+        def post_message(self, conversation_id, text):
+            mid = super().post_message(conversation_id, text)      # the CRM stored it ...
+            if self.lose_response:
+                raise TimeoutError("read timeout")                 # ... but we never got the answer
+            return mid
+    s, a = fresh_store(), SavesThenTimesOut()
+    s.r = _FakeR()
+    timeutil.set_clock(NIGHT)
+    h = TurnHandler(s, LLMX, KB, a, lambda u: PACK.test_users.get(u))
+    ev = {"event_id": "951", "kind": "user_message", "user_id": "U1001", "conversation_id": "C951", "text": "Hello"}
+    try:
+        h(dict(ev))
+    except RuntimeError:
+        pass
+    saved = list(a.outbox["C951"])
+    a.lose_response = False
+    h(dict(ev))
+    assert a.outbox["C951"] == saved and s.r.exists("tanya:done:951"), (saved, a.outbox["C951"])
+
+
+@test
+def staff_in_one_conversation_leaves_other_conversation_to_bot():
+    """PT8: staff took over chat A; the same customer writing in chat B still gets Tanya."""
+    from tanya.crm_adapter import ConsoleAdapter
+    from tanya.workers import TurnHandler
+    os.environ["USE_LANGGRAPH"] = "1"
+    s, a = fresh_store(), ConsoleAdapter()
+    timeutil.set_clock(NIGHT)
+    h = TurnHandler(s, LLMX, KB, a, lambda u: PACK.test_users.get(u))
+    h({"event_id": "1001", "kind": "user_message", "user_id": "U1001", "conversation_id": "CA", "text": "Hello"})
+    s.set_human_flag("CA", 12, NIGHT)
+    h({"event_id": "1002", "kind": "staff_message", "user_id": "U1001", "conversation_id": "CA", "text": "Staff here"})
+    h({"event_id": "1003", "kind": "user_message", "user_id": "U1001", "conversation_id": "CB",
+       "text": "Stop-loss kya hota hai?"})
+    assert a.outbox.get("CB"), "conversation B was silenced by staff in conversation A"
+    n = len(a.outbox["CA"])
+    h({"event_id": "1004", "kind": "user_message", "user_id": "U1001", "conversation_id": "CA", "text": "Hello?"})
+    assert len(a.outbox["CA"]) == n                   # A itself stays with the staff member
+
+
+@test
 def kill_switch_stopped_is_silent():
     s = fresh_store()
     s.set_killswitch("stopped")

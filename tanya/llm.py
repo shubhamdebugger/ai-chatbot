@@ -9,6 +9,8 @@ Plain English:
 """
 import json
 import re
+import sys
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -30,6 +32,15 @@ class LLMResult:
     cost_inr: float = 0.0
     error: str = ""
     data: dict = field(default_factory=dict)  # parsed JSON when json_mode
+    request_id: str = ""                      # the provider's own id for this call (audit / support tickets)
+
+
+_RID = threading.local()
+
+
+def _remember(r):
+    """Keep the provider's request id of the last HTTP answer on this thread (Anthropic: request-id, OpenAI: x-request-id)."""
+    _RID.value = r.headers.get("request-id") or r.headers.get("x-request-id") or ""
 
 
 def parse_json(text: str):
@@ -93,6 +104,7 @@ def _anthropic(model, system, messages, temperature, max_tokens, json_mode, time
         _NO_TEMPERATURE.add(model)             # newer models accept only their default temperature
         body.pop("temperature")
         r = httpx.post("https://api.anthropic.com/v1/messages", headers=headers, json=body, timeout=timeout)
+    _remember(r)
     r.raise_for_status()
     j = r.json()
     text = "".join(b.get("text", "") for b in j.get("content", []) if b.get("type") == "text")
@@ -110,6 +122,7 @@ def _openai(model, system, messages, temperature, max_tokens, json_mode, timeout
     if r.status_code == 400 and "temperature" in r.text:
         body.pop("temperature", None)          # some models accept only their default temperature
         r = httpx.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body, timeout=timeout)
+    _remember(r)
     r.raise_for_status()
     j = r.json()
     text = j["choices"][0]["message"].get("content") or ""
@@ -133,6 +146,7 @@ def _google(model, system, messages, temperature, max_tokens, json_mode, timeout
         headers={"x-goog-api-key": S.api_key("google"), "content-type": "application/json"},
         json={"systemInstruction": {"parts": [{"text": system}]}, "contents": contents, "generationConfig": cfg},
         timeout=timeout)
+    _remember(r)
     r.raise_for_status()
     j = r.json()
     parts = (j.get("candidates") or [{}])[0].get("content", {}).get("parts", [])
@@ -144,6 +158,7 @@ def _google(model, system, messages, temperature, max_tokens, json_mode, timeout
 def _mock(model, system, messages, temperature, max_tokens, json_mode, timeout, schema=None):
     from .llm_mock import mock_complete
     text = mock_complete(system, messages)
+    _RID.value = "mock"
     return text, len(system) // 4, len(text) // 4
 
 
@@ -151,6 +166,13 @@ _PROVIDERS = {"anthropic": _anthropic, "openai": _openai, "google": _google, "mo
 
 
 # ---------------------------------------------------------------- the one door
+def _log(res):
+    """One line per model call in the process log: proof of which provider really answered."""
+    print(f"[llm] {res.purpose} provider={res.provider} model={res.model} ok={res.ok} ms={res.ms} "
+          f"tokens={res.input_tokens}/{res.output_tokens} request_id={res.request_id or '-'}"
+          + (f" error={res.error[:120]}" if res.error else ""), file=sys.stderr, flush=True)
+
+
 class LLM:
     def __init__(self, provider=None):
         """provider: force one provider (e.g. the morning audit uses a different one). Default: PROVIDER in .env."""
@@ -174,6 +196,7 @@ class LLM:
         for provider, model in attempts:
             for attempt in range(2):
                 t0 = time.time()
+                _RID.value = ""
                 try:
                     text, tin, tout = _PROVIDERS[provider](model, system, normalise_messages(messages),
                                                            temperature, max_tokens, json_mode, timeout,
@@ -181,7 +204,8 @@ class LLM:
                     p_in, p_out = S.price(model)
                     cost = (tin * p_in + tout * p_out) / 1_000_000 * self.usd_inr
                     res = LLMResult(True, text, provider, model, purpose, tin, tout,
-                                    int((time.time() - t0) * 1000), round(cost + spent, 4))
+                                    int((time.time() - t0) * 1000), round(cost + spent, 4),
+                                    request_id=getattr(_RID, "value", ""))
                     if json_mode:
                         res.data = parse_json(text) or {}
                         if not res.data:
@@ -190,10 +214,13 @@ class LLM:
                             spent += cost
                             last = res
                             break                      # try the next model / provider
+                    _log(res)
                     return res
                 except Exception as e:  # network, timeout, HTTP error — retry if busy, else next attempt
                     last = LLMResult(False, "", provider, model, purpose, ms=int((time.time() - t0) * 1000),
-                                     cost_inr=round(spent, 4), error=f"{type(e).__name__}: {str(e)[:200]}")
+                                     cost_inr=round(spent, 4), error=f"{type(e).__name__}: {str(e)[:200]}",
+                                     request_id=getattr(_RID, "value", ""))
+                    _log(last)
                     status = getattr(getattr(e, "response", None), "status_code", None)
                     busy = status in (429, 500, 502, 503, 504) or isinstance(e, httpx.TimeoutException)
                     if not busy or attempt:
