@@ -35,6 +35,9 @@ class LLMResult:
     request_id: str = ""                      # the provider's own id for this call (audit / support tickets)
 
 
+# One keep-alive connection pool per process (Spec 3.1 F5): no new TLS handshake per call.
+HTTP = httpx.Client(limits=httpx.Limits(max_connections=20, max_keepalive_connections=10), timeout=60)
+
 _RID = threading.local()
 
 
@@ -99,11 +102,11 @@ def _anthropic(model, system, messages, temperature, max_tokens, json_mode, time
         body["output_config"] = {"format": {"type": "json_schema", "schema": schema}}
     headers = {"x-api-key": S.api_key("anthropic"), "anthropic-version": "2023-06-01",
                "content-type": "application/json"}
-    r = httpx.post("https://api.anthropic.com/v1/messages", headers=headers, json=body, timeout=timeout)
+    r = HTTP.post("https://api.anthropic.com/v1/messages", headers=headers, json=body, timeout=timeout)
     if r.status_code == 400 and "temperature" in r.text and "temperature" in body:
         _NO_TEMPERATURE.add(model)             # newer models accept only their default temperature
         body.pop("temperature")
-        r = httpx.post("https://api.anthropic.com/v1/messages", headers=headers, json=body, timeout=timeout)
+        r = HTTP.post("https://api.anthropic.com/v1/messages", headers=headers, json=body, timeout=timeout)
     _remember(r)
     r.raise_for_status()
     j = r.json()
@@ -118,10 +121,10 @@ def _openai(model, system, messages, temperature, max_tokens, json_mode, timeout
     if json_mode:
         body["response_format"] = {"type": "json_object"}
     headers = {"Authorization": f"Bearer {S.api_key('openai')}", "content-type": "application/json"}
-    r = httpx.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body, timeout=timeout)
+    r = HTTP.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body, timeout=timeout)
     if r.status_code == 400 and "temperature" in r.text:
         body.pop("temperature", None)          # some models accept only their default temperature
-        r = httpx.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body, timeout=timeout)
+        r = HTTP.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body, timeout=timeout)
     _remember(r)
     r.raise_for_status()
     j = r.json()
@@ -141,7 +144,7 @@ def _google(model, system, messages, temperature, max_tokens, json_mode, timeout
         cfg["maxOutputTokens"] = max_tokens + S.get("google_thinking_extra_tokens", 1024)
     if json_mode:
         cfg["responseMimeType"] = "application/json"
-    r = httpx.post(
+    r = HTTP.post(
         f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
         headers={"x-goog-api-key": S.api_key("google"), "content-type": "application/json"},
         json={"systemInstruction": {"parts": [{"text": system}]}, "contents": contents, "generationConfig": cfg},
@@ -230,7 +233,7 @@ class LLM:
 
 
 # ---------------------------------------------------------------- embeddings (for RAG, AI-C05)
-def embed(texts):
+def embed(texts, timeout=60):
     """Vectors for the knowledge search. Returns None when no embedding provider is set.
 
     EMBEDDING_PROVIDER=openai|google in .env (Anthropic has no embedding API).
@@ -242,17 +245,17 @@ def embed(texts):
     model = S.raw.get("embedding_models", {}).get(prov)
     try:
         if prov == "openai":
-            r = httpx.post("https://api.openai.com/v1/embeddings",
+            r = HTTP.post("https://api.openai.com/v1/embeddings",
                            headers={"Authorization": f"Bearer {S.api_key('openai')}"},
-                           json={"model": model, "input": texts}, timeout=60)
+                           json={"model": model, "input": texts}, timeout=timeout)
             r.raise_for_status()
             return [d["embedding"] for d in r.json()["data"]]
         if prov == "google":
-            r = httpx.post(
+            r = HTTP.post(
                 f"https://generativelanguage.googleapis.com/v1beta/models/{model}:batchEmbedContents",
                 headers={"x-goog-api-key": S.api_key("google")},
                 json={"requests": [{"model": f"models/{model}", "content": {"parts": [{"text": t}]}}
-                                   for t in texts]}, timeout=60)
+                                   for t in texts]}, timeout=timeout)
             r.raise_for_status()
             return [e["values"] for e in r.json()["embeddings"]]
     except Exception:

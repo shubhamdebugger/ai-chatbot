@@ -18,6 +18,9 @@ import httpx
 
 from .settings import S
 
+# keep-alive pool to the CRM: every bubble is 1-2 api.php calls, a new TCP connection each time added up
+CRM_HTTP = httpx.Client(limits=httpx.Limits(max_connections=10, max_keepalive_connections=5))
+
 
 @dataclass
 class IntakeEvent:
@@ -48,6 +51,11 @@ class CRMAdapter:
         Read from the CRM itself just before posting, so a staff reply whose webhook has not arrived yet
         still stops Tanya (pressure test K3 / PT6)."""
         return False
+
+    def recent_conversations(self, since_utc: str) -> list:
+        """Conversations with any message after since_utc ('YYYY-MM-DD HH:MM:SS', CRM time = UTC), each with its
+        latest message. Used by the reconciler to find customer messages whose webhook never arrived."""
+        return []
 
     def own_message_saved(self, conversation_id: str, after_message_id, text: str) -> bool:
         """True if Tanya's message with this text is already in the chat after the given CRM message:
@@ -117,6 +125,7 @@ class SupportBoardAdapter(CRMAdapter):
     FN = {
         "send": "send-message",
         "conversation": "get-conversation",
+        "new_conversations": "get-new-conversations",
         "user": "get-user",
         "update_user": "update-user",
         "department": "update-conversation-department",
@@ -134,7 +143,7 @@ class SupportBoardAdapter(CRMAdapter):
         self.human_dept = S.env("CRM_HUMAN_DEPARTMENT_ID")
 
     def _call(self, fn, **params):
-        r = httpx.post(self.url, data={"token": self.token, "function": self.FN[fn], **params}, timeout=10)
+        r = CRM_HTTP.post(self.url, data={"token": self.token, "function": self.FN[fn], **params}, timeout=10)
         r.raise_for_status()
         j = r.json()
         # TO CONFIRM (A1): success/error shape. Support Board commonly returns {"success": true, "response": ...}
@@ -171,6 +180,10 @@ class SupportBoardAdapter(CRMAdapter):
         res = self._call("conversation", conversation_id=conversation_id)
         msgs = res.get("messages", []) if isinstance(res, dict) else []
         return msgs[-limit:]
+
+    def recent_conversations(self, since_utc):
+        res = self._call("new_conversations", datetime=since_utc)
+        return res if isinstance(res, list) else []
 
     def staff_replied_after(self, conversation_id, after_message_id):
         try:

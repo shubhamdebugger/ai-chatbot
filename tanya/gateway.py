@@ -9,10 +9,13 @@ Plain English:
 - /dev/...     : the developer console (RUN_MODE=dev or DEV_CONSOLE=1) to chat with Tanya without the CRM.
 """
 import json
+import sys
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from starlette.concurrency import run_in_threadpool
 
 from . import memory_model as mm
 from .brief import agent_card
@@ -59,24 +62,80 @@ def health():
 
 
 
+@app.get("/health/queues")
+def health_queues():
+    """Monitoring: is any message waiting, stuck or lost? (alarm on dead > 0, oldest_pending_s > 60,
+    reconcile_age_s > 60, p95_total_ms over target)."""
+    if not SERVER:
+        return {"ok": True, "run_mode": "dev"}
+    from .streams import GROUP, stream_name
+    r, now_ms = store.r, int(time.time() * 1000)
+    lanes, worst = [], 0
+    for p in range(S.get("stream_partitions", 8)):
+        s = stream_name(p)
+        try:
+            g = next((x for x in r.xinfo_groups(s) if x["name"] == GROUP), {})
+        except Exception:
+            g = {}
+        oldest = 0
+        if g.get("pending"):
+            first = r.xpending_range(s, GROUP, min="-", max="+", count=1)
+            if first:
+                oldest = int(first[0]["time_since_delivered"] / 1000)
+        worst = max(worst, oldest)
+        lanes.append({"lane": s, "pending": g.get("pending", 0), "lag": g.get("lag"), "oldest_pending_s": oldest,
+                      "consumers": g.get("consumers", 0)})
+    turns = [json.loads(x) for x in r.lrange("tanya:metrics:turns", 0, 99)]
+    tot = sorted(t["total_ms"] for t in turns if t.get("total_ms") is not None)
+    pct = lambda q: tot[min(len(tot) - 1, int(len(tot) * q))] if tot else None
+    last = lambda k: (int(time.time()) - int(r.get(k))) if r.get(k) else None
+    out = {"ok": True, "lanes": lanes, "oldest_pending_s": worst, "dead_letters": r.xlen("tanya:dead"),
+           "errors_total": r.xlen("tanya:errors"), "reconciled_total": int(r.get("tanya:metrics:reconciled") or 0),
+           "reconcile_age_s": last("tanya:metrics:reconcile_last"), "webhook_age_s": last("tanya:metrics:webhook_last"),
+           "turns_measured": len(tot), "p50_total_ms": pct(0.5), "p95_total_ms": pct(0.95)}
+    out["alarms"] = [a for a, bad in (("dead_letters", out["dead_letters"] > 0), ("stuck_pending", worst > 60),
+                                       ("reconciler_not_running", (out["reconcile_age_s"] or 999) > 60)) if bad]
+    return out
+
+
 # ------------------------------------------------------------------ CRM webhook
 @app.post("/webhook/crm")
 async def webhook(request: Request):
+    """The CRM's PHP request (the customer's 'Sending...') waits for this answer, so it must be fast and must
+    never block other webhooks: the Redis work runs in the thread pool, not on the event loop."""
+    t0 = time.perf_counter()
     payload = await request.json()
-    ev = adapter.parse_webhook(payload, {k.lower(): v for k, v in request.headers.items()})
+    headers = {k.lower(): v for k, v in request.headers.items()}
+    try:
+        status, body, ev = await run_in_threadpool(_webhook, payload, headers)
+    except Exception as e:                                           # Redis down etc.: say so (503); the
+        status, body, ev = 503, {"ok": False, "error": type(e).__name__}, None   # reconciler recovers the message
+    print(f"[webhook] kind={getattr(ev, 'kind', '-')} event={getattr(ev, 'event_id', '-')} status={status} "
+          f"result={json.dumps(body)} ms={int((time.perf_counter() - t0) * 1000)}", file=sys.stderr, flush=True)
+    return JSONResponse(body, status_code=status)
+
+
+def _webhook(payload, headers):
+    ev = adapter.parse_webhook(payload, headers)
+    if SERVER and ev is not None:
+        try:
+            store.r.set("tanya:metrics:webhook_last", int(time.time()))
+        except Exception:
+            pass
     if ev is None:
-        return JSONResponse({"ok": False, "ignored": True}, status_code=200)
+        return 200, {"ok": False, "ignored": True}, None
     if ev.kind == "staff_message":                                   # HUMAN at once (v4 step 6)
         store.set_human_flag(ev.conversation_id, S.get("human_mode_release_hours", 12), timeutil.now())
     if ev.kind not in ("user_message", "staff_message"):
-        return {"ok": True, "skipped": ev.kind}
+        return 200, {"ok": True, "skipped": ev.kind}, ev
     event = {"event_id": ev.event_id, "kind": ev.kind, "user_id": ev.user_id,
-             "conversation_id": ev.conversation_id, "text": ev.text}
+             "conversation_id": ev.conversation_id, "text": ev.text,
+             "received_ms": int(time.time() * 1000), "source": "webhook"}
     if SERVER:
-        return {"ok": True, "queued": intake.enqueue(event)}
+        return 200, {"ok": True, "queued": intake.enqueue(event)}, ev
     dev_handler.adapter = adapter
     dev_handler(event)                                               # dev: process inline
-    return {"ok": True}
+    return 200, {"ok": True}, ev
 
 
 @app.post("/events/app")

@@ -12,6 +12,7 @@ PLUMBING OWNER: JUNIOR B. This file is complete; it needs a real Redis (REDIS_UR
 """
 import json
 import socket
+import sys
 import time
 import zlib
 
@@ -63,6 +64,9 @@ class StreamWorker:
         self.streams = streams or [stream_name(p) for p in partitions]
         self.max_deliveries = S.get("max_deliveries_before_dead_letter", 5)
         self.idle_ms = S.get("reclaim_idle_seconds", 60) * 1000
+        self._ensure_groups()
+
+    def _ensure_groups(self):
         for s in self.streams:
             try:
                 self.r.xgroup_create(s, self.group, id="0", mkstream=True)
@@ -70,14 +74,46 @@ class StreamWorker:
                 if "BUSYGROUP" not in str(e):
                     raise
 
+    @staticmethod
+    def _sid(msg_id):
+        a, _, b = str(msg_id).partition("-")
+        return int(a), int(b or 0)
+
     def _handle(self, stream, msg_id, fields):
+        """Order per customer (PT9): a customer's earlier message that failed is retried first; if it still
+        fails, this one waits too (left pending, retried in order). Other customers are not held up."""
         try:
-            self.handler(json.loads(fields["event"]))
+            ev = json.loads(fields["event"])
+        except Exception:
+            ev = {}
+        bkey = f"tanya:blocked:{ev.get('user_id')}" if ev.get("user_id") else None
+        me = f"{stream}|{msg_id}"
+        try:
+            if bkey:
+                for m in self.r.zrange(bkey, 0, -1):
+                    s2, _, mid2 = m.partition("|")
+                    if m == me or s2 != stream or self._sid(mid2) >= self._sid(msg_id):
+                        continue
+                    claimed = self.r.xclaim(s2, self.group, self.consumer, 0, [mid2])
+                    if not claimed or not claimed[0][1]:  # already done / dead-lettered elsewhere
+                        self.r.zrem(bkey, m)
+                        continue
+                    if not self._handle(s2, claimed[0][0], claimed[0][1]):
+                        raise RuntimeError(f"ORDER_HOLD: earlier message {mid2} of this customer is not done yet")
+            self.handler(ev)
             self.r.xack(stream, self.group, msg_id)
+            if bkey:
+                self.r.zrem(bkey, me)
             return True
         except Exception as e:
-            self.r.xadd("tanya:errors", {"stream": stream, "id": msg_id, "error": f"{type(e).__name__}: {e}"[:500]},
-                        maxlen=10_000, approximate=True)
+            try:
+                if bkey:
+                    self.r.zadd(bkey, {me: time.time()})
+                    self.r.expire(bkey, 86400)
+                self.r.xadd("tanya:errors", {"stream": stream, "id": msg_id, "error": f"{type(e).__name__}: {e}"[:500]},
+                            maxlen=10_000, approximate=True)
+            except Exception:
+                pass                                    # Redis itself is down: the job simply stays pending
             return False
 
     def reclaim(self):
@@ -92,6 +128,14 @@ class StreamWorker:
                     body = msgs[0][1] if msgs else {}
                     self.r.xadd("tanya:dead", {"stream": s, "id": p["message_id"], **body}, maxlen=100_000)
                     self.r.xack(s, self.group, p["message_id"])
+                    try:                                # release the customer's later messages (PT9)
+                        uid = json.loads(body.get("event", "{}")).get("user_id")
+                        if uid:
+                            self.r.zrem(f"tanya:blocked:{uid}", f"{s}|{p['message_id']}")
+                    except Exception:
+                        pass
+                    print(f"[stream] DEAD LETTER {s} {p['message_id']} after {p['times_delivered']} attempts",
+                          file=sys.stderr, flush=True)
                     continue
                 claimed = self.r.xclaim(s, self.group, self.consumer, self.idle_ms, [p["message_id"]])
                 for msg_id, fields in claimed:
@@ -107,9 +151,21 @@ class StreamWorker:
         return n
 
     def run_forever(self):
-        last_reclaim = 0
+        """Never dies on a Redis/network error: logs, backs off, reconnects (redis-py reconnects on the next
+        command) and recreates the consumer group if Redis lost it. Pending jobs of a crashed worker are
+        reclaimed every 5 s once idle for reclaim_idle_seconds."""
+        last_reclaim, delay = 0, 1
         while True:
-            self.run_once()
-            if time.time() - last_reclaim > 15:
-                self.reclaim()
-                last_reclaim = time.time()
+            try:
+                self.run_once()
+                if time.time() - last_reclaim > 5:
+                    self.reclaim()
+                    last_reclaim = time.time()
+                delay = 1
+            except Exception as e:
+                print(f"[stream] {self.consumer} error {type(e).__name__}: {str(e)[:200]} — retry in {delay}s",
+                      file=sys.stderr, flush=True)
+                time.sleep(delay)
+                delay = min(delay * 2, 30)
+                if "NOGROUP" in str(e):               # Redis restarted without its data: recreate the groups
+                    self._ensure_groups()

@@ -634,7 +634,66 @@ def smalltalk_with_a_whole_topic_goes_to_the_ai():
                        for b in st["bubbles"]), (msg, st["bubbles"])
 
 
+@test
+def reconciler_recovers_missed_webhooks_once_in_order():
+    """A customer message whose webhook never arrived is queued by the reconciler, in order, exactly once."""
+    import datetime as dt
+    import json
+    from tanya.crm_adapter import ConsoleAdapter
+    from tanya.streams import Intake
+    from tanya.workers import reconcile_once
+    now = dt.datetime(2026, 10, 3, 10, 0, 0)
+    t = lambda s: (now - dt.timedelta(seconds=s)).strftime("%Y-%m-%d %H:%M:%S")
+
+    class Crm(ConsoleAdapter):
+        def recent_conversations(self, since):
+            return [{"conversation_id": "C1", "conversation_user_id": "U9", "message_user_id": "U9", "message_user_type": "lead"},
+                    {"conversation_id": "C2", "conversation_user_id": "U8", "message_user_id": "2", "message_user_type": "bot"}]
+
+        def get_conversation(self, conv, limit=30):
+            return [{"id": "11", "user_id": "U9", "user_type": "lead", "message": "old, answered", "creation_time": t(300)},
+                    {"id": "12", "user_id": "2", "user_type": "bot", "message": "Tanya's answer", "creation_time": t(290)},
+                    {"id": "13", "user_id": "U9", "user_type": "lead", "message": "missed one", "creation_time": t(60)},
+                    {"id": "14", "user_id": "U9", "user_type": "lead", "message": "missed two", "creation_time": t(30)},
+                    {"id": "15", "user_id": "U9", "user_type": "lead", "message": "webhook in flight", "creation_time": t(3)}]
+    s, r = fresh_store(), _FakeR()
+    r.incr = lambda k: r.kv.__setitem__(k, int(r.kv.get(k, 0)) + 1)
+    s.r = r
+    got = reconcile_once(s, Crm(), Intake(r), now_utc=now)
+    assert got == ["13", "14"], got                                   # not 11 (answered), not 15 (grace)
+    assert [json.loads(f["event"])["event_id"] for _, f in r.stream] == ["13", "14"]
+    assert reconcile_once(s, Crm(), Intake(r), now_utc=now) == []      # idempotent
+
+
 # ---------------------------------------------------------------- optional: Redis and MySQL
+if os.environ.get("REDIS_URL"):
+    @test
+    def failed_message_keeps_customer_order_other_customers_continue():
+        """PT9: a customer's later message is never answered before his earlier failed one."""
+        import redis
+        from tanya.streams import Intake, StreamWorker, partition
+        r = redis.Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+        r.flushdb()
+        done, fail = [], {"A1": 1}                                     # A1 fails once, then works
+
+        def handler(ev):
+            if fail.get(ev["event_id"]):
+                fail[ev["event_id"]] -= 1
+                raise RuntimeError("CRM down")
+            done.append(ev["event_id"])
+        for eid in ("A1", "A2"):
+            Intake(r).enqueue({"event_id": eid, "user_id": "UA", "kind": "user_message"})
+        w = StreamWorker(r, [partition("UA")], handler, consumer="t")
+        w.run_once(block_ms=100)
+        assert done == ["A1", "A2"], done                              # A2 retried A1 first, then itself
+        fail["B1"] = 99                                                # B1 keeps failing
+        for eid in ("B1", "B2"):
+            Intake(r).enqueue({"event_id": eid, "user_id": "UB", "kind": "user_message"})
+        Intake(r).enqueue({"event_id": "C1", "user_id": "UC", "kind": "user_message"})
+        for p in {partition("UB"), partition("UC")}:
+            StreamWorker(r, [p], handler, consumer="t").run_once(block_ms=100)
+        assert "B2" not in done and "C1" in done, done                 # B2 held, other customer served
+
 if os.environ.get("REDIS_URL"):
     @test
     def redis_store_and_streams():

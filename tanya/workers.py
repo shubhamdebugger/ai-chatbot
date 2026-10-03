@@ -6,7 +6,7 @@ Plain English:
 - persist   : copies memory events from Redis into the MySQL orch_ tables (one way, seconds behind).
 - loader    : fills a customer's picture from the CRM BEFORE he needs it (cold start, app-open, nightly).
 - sessions  : closes sessions after 30 min silence → session note (AI) + Lead Brief to the CRM.
-Run:  python -m tanya.workers turn 0-7 | persist | loader | sessions
+Run:  python -m tanya.workers turn 0-7 | persist | loader | sessions | reconcile
 
 PLUMBING OWNERS: JUNIOR B (turn, persist), CODER D (loader mapping, CRM brief), JUNIOR C (sessions).
 """
@@ -62,12 +62,15 @@ class TurnHandler:
             return self._staff(event)
         if self._marked(event, "done"):               # a reclaimed job whose turn was already delivered (PT5)
             return None
+        t_start = time.time()
         retry = self._retry_get(event)
         if retry:                                     # earlier post failed: post the saved reply, don't think again
             st, conv = None, retry["conversation_id"]
             post_failed = self._post_bubbles(conv, retry["bubbles"], event, reconcile=True)[1]
         else:
+            attempts_ms = []
             for attempt in range(3):                  # redo the turn if a newer version was saved meanwhile
+                ta = time.time()
                 try:
                     st = run_turn({"user_id": event["user_id"], "kind": "app_open" if kind == "app_open" else "message",
                                    "text": event.get("text", ""), "event_id": event.get("event_id"),
@@ -75,16 +78,41 @@ class TurnHandler:
                                    "store": self.store, "llm": self.llm, "kb": self.kb, "seed_fn": self.seed_fn})
                     break
                 except VersionConflict:
+                    attempts_ms.append(int((time.time() - ta) * 1000))
                     time.sleep(0.2 * (attempt + 1))
             else:
                 raise RuntimeError("version conflict 3 times")
+            attempts_ms.append(int((time.time() - ta) * 1000))
+            st["attempts_ms"] = attempts_ms
+            t_turn = time.time()
             conv, post_failed = self._deliver(st, event)
+            self._timing(event, st, t_start, t_turn)
         if post_failed and self._retry_set(event, conv, post_failed):
             # not acknowledged: the reclaimer retries it, and after the last attempt it goes to the dead letter (PT3)
             raise RuntimeError(f"POST_FAILED: {len(post_failed)} bubble(s) not accepted by the CRM")
         self._retry_clear(event)
         self._mark(event, "done")
         return st
+
+    def _timing(self, event, st, t_start, t_turn):
+        """One line per turn: where the customer's waiting time went (queue, thinking, AI, posting)."""
+        now = time.time()
+        recv = event.get("received_ms")
+        llm_ms = sum(c.get("ms", 0) for c in (st.get("llm_calls") or []))
+        line = {"event": event.get("event_id"), "conv": event.get("conversation_id"), "source": event.get("source", "-"),
+                "queue_ms": int(t_start * 1000 - recv) if recv else None, "turn_ms": int((t_turn - t_start) * 1000),
+                "llm_ms": llm_ms, "llm_calls": len(st.get("llm_calls") or []), "post_ms": int((now - t_turn) * 1000),
+                "bubbles": len(st.get("bubbles") or []), "total_ms": int(now * 1000 - recv) if recv else None,
+                "nodes": ",".join(f"{k}:{v}" for k, v in (st.get("node_ms") or {}).items()),
+                "attempts_ms": "/".join(str(x) for x in st.get("attempts_ms", []))}
+        print("[turn] " + " ".join(f"{k}={v}" for k, v in line.items()), file=sys.stderr, flush=True)
+        r = getattr(self.store, "r", None)
+        if r is not None:
+            try:                                      # last 500 turns, for /health/queues
+                r.lpush("tanya:metrics:turns", json.dumps(line))
+                r.ltrim("tanya:metrics:turns", 0, 499)
+            except Exception:
+                pass
 
     def _retry_get(self, event):
         r = getattr(self.store, "r", None)
@@ -136,6 +164,7 @@ class TurnHandler:
         """bubbles = [[index, text], ...]. Returns (texts suppressed for HUMAN mode, [[index, text]] the CRM refused).
         reconcile: a retry first checks the CRM, because a post whose response was lost may have been saved (PT4)."""
         suppressed, post_failed = [], []
+        crm_checked = False
         for i, text in bubbles:
             posted = dict(event, event_id=f"{event.get('event_id')}:{i}") if event.get("event_id") else event
             if self._marked(posted, "posted"):          # this bubble reached the CRM before a crash: never again
@@ -148,14 +177,21 @@ class TurnHandler:
                 except Exception:
                     post_failed.append([i, text])       # cannot tell if it was saved: do not risk a duplicate now
                     continue
-            if self.store.human_flag(conv, tnow()) or self._staff_in_crm(conv, event):
+            t0 = time.time()
+            # Redis HUMAN flag before every bubble (set within ms by the staff webhook); the slower CRM read
+            # (catches a staff reply whose webhook is late or lost) once, just before the first bubble.
+            if self.store.human_flag(conv, tnow()) or (not crm_checked and self._staff_in_crm(conv, event)):
                 suppressed.append(text)
                 continue
+            crm_checked = True
+            t1 = time.time()
             try:
                 self.adapter.post_message(conv, text)
                 self._mark(posted, "posted")
             except Exception:
                 post_failed.append([i, text])
+            print(f"[post] event={event.get('event_id')} bubble={i} check_ms={int((t1 - t0) * 1000)} "
+                  f"post_ms={int((time.time() - t1) * 1000)}", file=sys.stderr, flush=True)
         return suppressed, post_failed
 
     def _staff_in_crm(self, conv, event):
@@ -406,6 +442,66 @@ def close_idle_sessions(store, llm, adapter, now=None):
     return done
 
 
+# ------------------------------------------------------------------ reconciler (no customer message is ever lost)
+STAFF_TYPES = ("agent", "admin", "bot")
+
+
+def reconcile_once(store, adapter, intake, now_utc=None, window_s=600, grace_s=15):
+    """The CRM sends each webhook ONCE and never retries (crm/include/functions.php sb_webhooks). If that call
+    is lost (Tanya down, network, Redis down → HTTP 503), the message would never be answered. Every run reads
+    the CRM's recent conversations and queues every customer message that is still unanswered and was never
+    queued. Idempotent: the same tanya:seen:{message_id} key as the webhook path, so it is queued at most once.
+    Safe after a Redis loss: a message already answered has a later Tanya/staff message and is skipped."""
+    import datetime as _dt
+    now_utc = now_utc or _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
+    since = (now_utc - _dt.timedelta(seconds=window_s)).strftime("%Y-%m-%d %H:%M:%S")
+    recovered = []
+    for c in adapter.recent_conversations(since) or []:
+        owner = str(c.get("conversation_user_id", ""))
+        if str(c.get("message_user_id")) != owner or str(c.get("message_user_type")) in STAFF_TYPES:
+            continue                                  # last word is Tanya's or staff's: nothing waiting
+        conv = str(c.get("conversation_id"))
+        msgs = adapter.get_conversation(conv, limit=30)
+        waiting = []
+        for m in msgs:                                # customer messages after the last non-customer message
+            if str(m.get("user_id")) == owner and str(m.get("user_type")) not in STAFF_TYPES:
+                waiting.append(m)
+            else:
+                waiting = []
+        for m in waiting:
+            try:
+                age = (now_utc - _dt.datetime.strptime(str(m.get("creation_time")), "%Y-%m-%d %H:%M:%S")).total_seconds()
+            except ValueError:
+                continue
+            if age < grace_s or age > window_s or store.r.exists(f"tanya:seen:{m['id']}"):
+                continue                              # webhook still in flight / too old (staff) / already queued
+            event = {"event_id": str(m["id"]), "kind": "user_message", "user_id": owner, "conversation_id": conv,
+                     "text": str(m.get("message", "")), "received_ms": int(time.time() * 1000), "source": "reconciler"}
+            if intake.enqueue(event):
+                recovered.append(event["event_id"])
+                store.r.incr("tanya:metrics:reconciled")
+                print(f"[reconcile] recovered event={event['event_id']} conv={conv} age_s={int(age)}",
+                      file=sys.stderr, flush=True)
+    store.r.set("tanya:metrics:reconcile_last", int(time.time()))
+    return recovered
+
+
+def forever(step, name, pause=0.0):
+    """Run step() forever. A Redis/network/CRM error is logged and retried with back-off instead of killing the
+    process (a dead worker silently stops replies until something restarts it)."""
+    delay = 1
+    while True:
+        try:
+            step()
+            delay = 1
+            if pause:
+                time.sleep(pause)
+        except Exception as e:
+            print(f"[{name}] error {type(e).__name__}: {str(e)[:200]} — retry in {delay}s", file=sys.stderr, flush=True)
+            time.sleep(delay)
+            delay = min(delay * 2, 30)
+
+
 # ------------------------------------------------------------------ command line
 def main(argv):
     from .streams import GROUP, StreamWorker
@@ -420,11 +516,15 @@ def main(argv):
         p = Persister()
         StreamWorker(store.r, [], lambda ev: p.write([ev]), group="persister", streams=["tanya:persist"]).run_forever()
     elif cmd == "loader":
-        run_loader(store, adapter)
+        forever(lambda: run_loader(store, adapter), "loader")
     elif cmd == "sessions":
-        while True:
-            close_idle_sessions(store, llm, adapter)
-            time.sleep(60)
+        forever(lambda: close_idle_sessions(store, llm, adapter), "sessions", pause=60)
+    elif cmd == "reconcile":
+        from .streams import Intake
+        intake = Intake(store.r)
+        every = float(S.env("RECONCILE_EVERY_SECONDS", "15"))
+        print(f"[reconcile] started: every {every:g} s, window 10 min", file=sys.stderr, flush=True)
+        forever(lambda: reconcile_once(store, adapter, intake), "reconcile", pause=every)
     elif cmd == "persist-file":
         print(persist_file(), "events written")
     else:

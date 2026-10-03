@@ -204,6 +204,20 @@ class KnowledgeIndex:
         return dot / (na * nb) if na and nb else 0.0
 
     # ---------------- the search
+    def _query_vector(self, query):
+        """The customer is waiting: the query embedding gets a short budget (Spec 3.1 F6, default 1.5 s) and is
+        cached per worker. Too slow or failed → None → keyword search only (still answers, never hangs)."""
+        cache = self.__dict__.setdefault("_qcache", {})
+        key = " ".join(query.lower().split())
+        if key in cache:
+            return cache[key]
+        qv = embed([query], timeout=float(S.env("EMBEDDING_TIMEOUT_SECONDS", "1.5")))
+        if qv:
+            if len(cache) > 2000:
+                cache.clear()
+            cache[key] = qv
+        return qv
+
     def search(self, query: str, top_k=None, categories=None):
         """Hybrid search. Returns the best chunks with scores (0..1)."""
         top_k = top_k or S.get("knowledge_top_k", 3)
@@ -215,7 +229,7 @@ class KnowledgeIndex:
         mx = max(kw) or 1.0
         scores = [k / mx for k in kw]
         if self.has_vectors:
-            qv = embed([query])
+            qv = self._query_vector(query)
             if qv:
                 qs = self._qdrant_scores(qv[0], categories) if self.qdrant else None
                 cos = [qs.get(c["chunk_id"], 0.0) for c in cands] if qs is not None \
