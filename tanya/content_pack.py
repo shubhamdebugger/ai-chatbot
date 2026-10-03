@@ -51,13 +51,20 @@ class ContentPack:
             return list(csv.DictReader(f))
 
     # ---------- fixed lines (never written by the AI) ----------
-    def fixed(self, line_id: str, lang: str, **values) -> str:
-        """Return fixed line FX-xx in the user's language, placeholders filled by code."""
+    def fixed(self, line_id: str, lang: str, variant: str = "", **values) -> str:
+        """Return fixed line FX-xx in the user's language, placeholders filled by code.
+
+        variant picks an A/B/C wording for the lines that rotate; others ignore it."""
         entry = self.fixed_lines[line_id]
+        if variant and isinstance(entry.get("variants"), dict):
+            entry = entry["variants"].get(variant) or next(iter(entry["variants"].values()))
         text = entry.get(lang) or entry.get("hinglish") or entry["english"]
         values.setdefault("sebi_reg_no", self.sebi.get("sebi_reg_no", ""))
         if not values.get("name"):
+            text = text.replace("{name} ji", "")                    # "… {name} ji!" → "…!"
             text = text.replace(" {name}", "").replace("{name}", "")   # cold start: no name yet
+            text = re.sub(r"  +", " ", text)
+            text = re.sub(r"\s+([!,.:;?])", r"\1", text)
         for k, v in values.items():
             text = text.replace("{" + k + "}", str(v))
         return text
