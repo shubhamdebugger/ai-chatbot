@@ -487,6 +487,27 @@ def staff_in_one_conversation_leaves_other_conversation_to_bot():
 
 
 @test
+def first_message_uses_crm_profile_without_loader_race():
+    """PT7: a new customer's record is built from the CRM before the first turn (no second AI run)."""
+    from tanya.crm_adapter import ConsoleAdapter
+    from tanya.workers import TurnHandler, seed_server_factory
+
+    class CrmWithProfile(ConsoleAdapter):
+        def get_user(self, user_id):
+            return {"first_name": "Ravi", "extra": {}}
+    s, a = fresh_store(), CrmWithProfile()
+    s.r = _FakeR()
+    s.r.rpush = lambda *a, **k: None
+    timeutil.set_clock(NIGHT)
+    st = TurnHandler(s, LLMX, KB, a, seed_server_factory(s, a))(
+        {"event_id": "1101", "kind": "user_message", "user_id": "NEW1", "conversation_id": "C1101",
+         "text": "Stop-loss kya hota hai?"})
+    rec = s.get("NEW1")
+    assert rec["profile"]["source"] == "crm" and rec["profile"]["name"] == "Ravi", rec["profile"]
+    assert len(st["llm_calls"]) <= 3, st["llm_calls"]
+
+
+@test
 def kill_switch_stopped_is_silent():
     s = fresh_store()
     s.set_killswitch("stopped")

@@ -33,9 +33,16 @@ def seed_dev(user_id):
     return PACK.test_users.get(user_id)
 
 
-def seed_server_factory(store):
-    """Server: a record must be prepared by the loader; if missing → cold start + ask the loader."""
+def seed_server_factory(store, adapter=None):
+    """Server: a record not prepared yet is built from the CRM before the first turn (one api.php read),
+    so the background loader can never save it in the middle of the turn and force a second AI run (PT7).
+    If the CRM cannot be read: cold start + ask the loader, as before."""
     def seed(user_id):
+        if adapter is not None:
+            try:
+                return load_from_crm(adapter, user_id)
+            except Exception:
+                pass
         try:
             store.r.rpush("tanya:loadq", user_id)
         except Exception:
@@ -407,7 +414,7 @@ def main(argv):
     if cmd == "turn":
         a, b = (argv[2] if len(argv) > 2 else f"0-{S.get('stream_partitions', 8) - 1}").split("-")
         parts = list(range(int(a), int(b) + 1))
-        handler = TurnHandler(store, llm, KnowledgeIndex(), adapter, seed_server_factory(store))
+        handler = TurnHandler(store, llm, KnowledgeIndex(), adapter, seed_server_factory(store, adapter))
         StreamWorker(store.r, parts, handler).run_forever()
     elif cmd == "persist":
         p = Persister()
