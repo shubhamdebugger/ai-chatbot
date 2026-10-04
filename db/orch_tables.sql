@@ -2,7 +2,7 @@
 -- Plain English: the permanent, audited copy of everything Ms Tanya does. Written BEHIND her by the
 -- persister (tanya/workers.py) from Redis — never read or written in the live chat path.
 -- No sb_ (CRM) table is touched. Run once on staging, then on live (DBA approval).
--- 8 tables from the v4 design + 8 new (Architecture v3.2 §18). Voice adds orch_transcripts, orch_call_notes later.
+-- 8 tables from the v4 design + 8 new (Architecture v3.2 §18) + orch_voice_calls (PWA voice calls, at the end).
 -- Text columns hold JSON as plain text so any MySQL 5.7+/8 or MariaDB accepts them.
 
 -- ---------------------------------------------------------------- v4 tables
@@ -183,4 +183,26 @@ CREATE TABLE IF NOT EXISTS orch_compliance_audits (  -- morning audit: item, exa
   model VARCHAR(60) NULL,
   created_at DATETIME NOT NULL,
   KEY k_audit_date (audit_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------------------------------------------------------- voice (PWA "Talk to Tanya", ElevenLabs)
+CREATE TABLE IF NOT EXISTS orch_voice_calls (        -- one row per voice call: masked transcript + summary
+  el_conversation_id VARCHAR(64) PRIMARY KEY,      -- ElevenLabs conversation id (webhook retries dedupe here)
+  user_id VARCHAR(64) NOT NULL,                    -- CRM user id (same key as chat), or pwa:<uid> if none yet
+  pwa_uid VARCHAR(64) NULL,
+  sb_user_id VARCHAR(64) NULL,
+  sb_conversation_id VARCHAR(64) NULL,             -- where the agent note was filed
+  started_at DATETIME NULL,
+  duration_secs INT NULL,
+  status VARCHAR(20) NULL,
+  ended_reason VARCHAR(255) NULL,
+  call_successful VARCHAR(20) NULL,                -- ElevenLabs evaluation: success | failure | unknown
+  title VARCHAR(255) NULL,
+  summary MEDIUMTEXT NULL,
+  kb_queries MEDIUMTEXT NULL,                      -- JSON: what Tanya searched in the knowledge base
+  transcript MEDIUMTEXT NULL,                      -- JSON: [{role, at_secs, text, tools?}], masked
+  masked VARCHAR(255) NULL,                        -- kinds of private data masked out
+  cost INT NULL,                                   -- ElevenLabs credits
+  received_at DATETIME NOT NULL,
+  KEY k_voice_user (user_id, started_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

@@ -51,6 +51,8 @@ def n_load(st):
         if seed is None:                       # not in memory and not loaded yet (Architecture §7.7.5)
             seed, st["cold_start"] = {"consent": False}, True
         rec = mm.new_record(uid, seed, now)
+    if st.get("conversation_id") and str(st["conversation_id"]) != str(uid):
+        rec["conversation_id"] = str(st["conversation_id"])   # the CRM thread he wrote in (HUMAN flag, notes)
     st["rec"] = rec
     st["new_session"] = mm.ensure_session(rec, now)
     mm.ensure_day(rec, now)

@@ -96,6 +96,9 @@ def mock_complete(system, messages):
     if "TASK: NOTE" in system:
         return json.dumps({"note": ["(mock) session summary line 1", "(mock) line 2", "(mock) line 3"],
                            "last_promise": ""})
+    if "TASK: VOICE FACTS" in system:
+        facts = [f for line in last.splitlines() for f in _label(line)["new_facts"]]
+        return json.dumps({"facts": facts}, ensure_ascii=False)
     if "TASK: AUDIT" in system:
         return json.dumps({"findings": []})
     return _reply(system, last)

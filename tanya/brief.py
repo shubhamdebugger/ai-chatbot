@@ -21,7 +21,7 @@ def lead_brief(rec, now, temp, evidence) -> str:
     if rec["facts"]:
         lines.append("In his words / known facts:")
         for k, f in rec["facts"].items():
-            who = {"chat": "told Tanya", "agent_note": "agent note", "crm_field": "CRM"}.get(f["source"], f["source"])
+            who = {"chat": "told Tanya", "voice": "told Tanya on a call", "agent_note": "agent note", "crm_field": "CRM"}.get(f["source"], f["source"])
             words = f' "{f["his_words"]}"' if f.get("his_words") else ""
             lines.append(f"  - {k}: {f['value']}{words} ({who}, {stamp(parse(f['at']))})")
     open_conf = [c for c in rec["conflicts"] if c["status"] == "open"]

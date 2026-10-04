@@ -59,6 +59,10 @@ class CRMAdapter:
         """Assign / flag the conversation for staff (department or agent, per A8)."""
         raise NotImplementedError
 
+    def add_agent_note(self, user_id: str, conversation_id: str, title: str, text: str) -> str:
+        """A new note on the conversation, visible to agents only (voice call summaries). Returns note id."""
+        raise NotImplementedError
+
 
 class ConsoleAdapter(CRMAdapter):
     """Dev console: an in-memory 'CRM' so the brain can be tested without the real one."""
@@ -67,6 +71,7 @@ class ConsoleAdapter(CRMAdapter):
         self.outbox = {}      # conversation_id -> list of posted texts
         self.briefs = {}      # user_id -> text
         self.handoffs = []
+        self.notes = {}       # conversation_id -> list of (title, text)
 
     def parse_webhook(self, payload, headers):
         return IntakeEvent(payload.get("event_id", ""), payload.get("kind", "user_message"),
@@ -93,6 +98,10 @@ class ConsoleAdapter(CRMAdapter):
     def hand_to_human(self, conversation_id, reason):
         self.handoffs.append((conversation_id, reason))
         return True
+
+    def add_agent_note(self, user_id, conversation_id, title, text):
+        self.notes.setdefault(conversation_id, []).append((title, text))
+        return f"note-{conversation_id}-{len(self.notes[conversation_id])}"
 
 
 class SupportBoardAdapter(CRMAdapter):
@@ -141,9 +150,13 @@ class SupportBoardAdapter(CRMAdapter):
         sender = str(data.get("user_id", ""))
         if sender == self.tanya_agent:
             return None                                     # our own reply echoed back — ignore
-        kind = "staff_message" if str(data.get("user_type", "")) in ("agent", "admin") else "user_message"
+        # The CRM's message-sent webhook carries no user_type (functions_messages.php sb_send_message):
+        # anyone who is not the conversation's customer is staff.
+        customer = str(data.get("conversation_user_id") or sender)
+        staff = sender != customer or str(data.get("user_type", "")) in ("agent", "admin")
+        kind = "staff_message" if staff else "user_message"
         return IntakeEvent(event_id=str(data.get("message_id") or data.get("id")), kind=kind,
-                           user_id=str(data.get("conversation_user_id") or sender),
+                           user_id=customer,
                            conversation_id=str(data.get("conversation_id")),
                            text=str(data.get("message", "")), raw=payload)
 
@@ -173,6 +186,12 @@ class SupportBoardAdapter(CRMAdapter):
     def hand_to_human(self, conversation_id, reason):
         self._call("department", conversation_id=conversation_id, department=self.human_dept)
         return True
+
+    def add_agent_note(self, user_id, conversation_id, title, text):
+        # TO CONFIRM (A4): same add-note function as the Lead Brief; notes are agent-only in SB.
+        res = self._call("note_add", conversation_id=conversation_id, user_id=self.tanya_agent,
+                         name=title, message=text)
+        return str(res)
 
 
 def make_adapter():

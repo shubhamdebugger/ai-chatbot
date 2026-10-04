@@ -19,6 +19,7 @@ NODES = {"load": turn.n_load, "gate": turn.n_gate, "understand": turn.n_understa
 class TurnState(TypedDict, total=False):
     """Everything one turn carries from step to step."""
     user_id: str
+    conversation_id: str
     kind: str
     text: str
     event_id: str

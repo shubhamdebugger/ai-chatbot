@@ -6,16 +6,23 @@ Plain English:
                  We answer the CRM in milliseconds; the thinking happens in the workers.
 - /events/app  : app events (app opened; later: plan bought, consent changed …) — input B2.
 - /kb/search   : knowledge search for the voice agent (ElevenLabs webhook tool). Needs KB_TOOL_SECRET.
+- /voice/post-call : ElevenLabs post-call webhook → orch_voice_calls + agent-only CRM note (voice.py).
+- /voice/context : tg-node-backend, when it issues a call token → the caller brief {{user_context}}.
+                   Needs TANYA_CONTEXT_SECRET (server to server only).
+- /voice/tools/... : ElevenLabs server tools during a call (recent chat, past calls, internal notes,
+                   save fact, request callback). Need KB_TOOL_SECRET + the signed call context (voice_context.py).
 - /health      : for monitoring.
 - /dev/...     : the developer console (RUN_MODE=dev or DEV_CONSOLE=1) to chat with Tanya without the CRM.
 """
 import hmac
 import json
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from . import memory_model as mm
 from .brief import agent_card
@@ -26,6 +33,8 @@ from .llm import LLM
 from .memory_store import make_store
 from .settings import ROOT, S
 from . import timeutil
+from . import voice
+from . import voice_context
 from .workers import TurnHandler, close_idle_sessions, seed_dev, seed_server_factory
 
 app = FastAPI(title="Ms Tanya — AI Gateway (Python reference)", version="1.0-frame")
@@ -71,6 +80,93 @@ def kb_search(body: KBQuery, x_tool_secret: str = Header("")):
     if not secret or not hmac.compare_digest(x_tool_secret, secret):
         raise HTTPException(401, "invalid tool secret")
     return for_voice(kb.search(body.query.strip(), top_k=body.top_k))
+
+
+@app.post("/voice/post-call")
+async def voice_post_call(request: Request):
+    """ElevenLabs post-call webhook (transcript). Signature is over the raw body, so read it first."""
+    raw = await request.body()
+    if not voice.verify_webhook(raw, request.headers.get("elevenlabs-signature", ""),
+                                S.env("ELEVENLABS_WEBHOOK_SECRET")):
+        raise HTTPException(401, "invalid signature")
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        raise HTTPException(400, "invalid JSON")
+    # CRM note call is blocking httpx — keep it off the event loop.
+    return await run_in_threadpool(voice.handle_post_call, payload, store, adapter, timeutil.now(), llm)
+
+
+class CallerContextQuery(BaseModel):
+    pwa_uid: str = Field(min_length=1, max_length=64)
+    sb_user_id: str = Field(default="", max_length=64)
+    sb_conversation_id: str = Field(default="", max_length=64)
+    app: dict = Field(default_factory=dict)          # what the PWA knows: trial, payment, answers, activity
+
+
+@app.post("/voice/context")
+def voice_caller_context(body: CallerContextQuery, x_context_secret: str = Header("")):
+    """Layer 1: the caller brief for {{user_context}}. Called by tg-node-backend only (never the browser)."""
+    secret = S.env("TANYA_CONTEXT_SECRET")
+    if not secret or not hmac.compare_digest(x_context_secret, secret):
+        raise HTTPException(401, "invalid context secret")
+    return voice_context.build_context(store, body.model_dump(), body.app, timeutil.now())
+
+
+class ToolCall(BaseModel):
+    """Every voice tool gets the signed call context from the dynamic variables (set as
+    'dynamic variable' parameters in ElevenLabs, so the AI cannot choose whose data it reads)."""
+    pwa_uid: str = ""
+    sb_user_id: str = ""
+    sb_conversation_id: str = ""
+    ctx_iat: str = ""
+    ctx_sig: str = ""
+    limit: int | None = Field(default=None, ge=1, le=30)
+    field: str = ""
+    value: str = Field(default="", max_length=300)
+    his_words: str = Field(default="", max_length=500)
+    reason: str = Field(default="", max_length=40)
+    preferred_time: str = Field(default="", max_length=200)
+    confirmed: bool = False
+
+
+def _tool_ctx(body: ToolCall, x_tool_secret: str) -> dict:
+    secret = S.env("KB_TOOL_SECRET")
+    if not secret or not hmac.compare_digest(x_tool_secret, secret):
+        raise HTTPException(401, "invalid tool secret")
+    ctx = voice.verify_context(body.model_dump(), int(time.time()), S.env("TANYA_VOICE_CTX_SECRET"),
+                               max_age=voice.TOOL_CTX_MAX_AGE_SECS)
+    if not ctx:
+        raise HTTPException(403, "invalid call context")
+    return ctx
+
+
+@app.post("/voice/tools/recent-chat")
+def voice_tool_recent_chat(body: ToolCall, x_tool_secret: str = Header("")):
+    return voice_context.recent_chat(store, adapter, _tool_ctx(body, x_tool_secret), body.limit)
+
+
+@app.post("/voice/tools/past-calls")
+def voice_tool_past_calls(body: ToolCall, x_tool_secret: str = Header("")):
+    return voice_context.past_calls(_tool_ctx(body, x_tool_secret), body.limit)
+
+
+@app.post("/voice/tools/internal-notes")
+def voice_tool_internal_notes(body: ToolCall, x_tool_secret: str = Header("")):
+    return voice_context.internal_notes(store, adapter, _tool_ctx(body, x_tool_secret), timeutil.now())
+
+
+@app.post("/voice/tools/request-callback")
+def voice_tool_request_callback(body: ToolCall, x_tool_secret: str = Header("")):
+    """'Our senior will call you' — only after the caller said yes."""
+    return voice_context.request_callback(store, adapter, _tool_ctx(body, x_tool_secret), body.reason,
+                                          body.preferred_time, body.confirmed, timeutil.now())
+
+
+@app.post("/voice/tools/save-fact")
+def voice_tool_save_fact(body: ToolCall, x_tool_secret: str = Header("")):
+    return voice_context.save_fact(store, _tool_ctx(body, x_tool_secret), body.field, body.value,
+                                   body.his_words, timeutil.now())
 
 # ------------------------------------------------------------------ CRM webhook
 @app.post("/webhook/crm")

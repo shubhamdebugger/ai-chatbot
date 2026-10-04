@@ -55,7 +55,8 @@ class TurnHandler:
             return self._staff(event)
         for attempt in range(3):                      # redo the turn if a newer version was saved meanwhile
             try:
-                st = run_turn({"user_id": event["user_id"], "kind": "app_open" if kind == "app_open" else "message",
+                st = run_turn({"user_id": event["user_id"], "conversation_id": event.get("conversation_id"),
+                               "kind": "app_open" if kind == "app_open" else "message",
                                "text": event.get("text", ""), "event_id": event.get("event_id"), "now": tnow(),
                                "store": self.store, "llm": self.llm, "kb": self.kb, "seed_fn": self.seed_fn})
                 break
@@ -213,6 +214,19 @@ class Persister:
             c.execute("INSERT INTO orch_compliance_audits (audit_date,user_id,item,lines_text,ai_verdict,model,created_at) "
                       "VALUES (%s,%s,%s,%s,%s,%s,%s)",
                       (e["audit_date"], u, e["item"][:80], e.get("lines", ""), e.get("verdict", "flag"), e.get("model"), at))
+        elif t == "voice_call":
+            c.execute("INSERT IGNORE INTO orch_voice_calls (el_conversation_id,user_id,pwa_uid,sb_user_id,"
+                      "sb_conversation_id,started_at,duration_secs,status,ended_reason,call_successful,title,"
+                      "summary,kb_queries,transcript,masked,cost,received_at) "
+                      "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                      (e["el_conversation_id"], u, e.get("pwa_uid"), e.get("sb_user_id"), e.get("sb_conversation_id"),
+                       _dt(e.get("started_at")) if e.get("started_at") else None, e.get("duration_secs"),
+                       e.get("status"), (e.get("ended_reason") or "")[:255], e.get("call_successful"),
+                       (e.get("title") or "")[:255], e.get("summary"), J(e.get("kb_queries", [])),
+                       J(e.get("transcript", [])), ",".join(e.get("masked", [])), e.get("cost"), at))
+            c.execute("INSERT INTO orch_lead_events (user_id,type,detail,at) VALUES (%s,'voice_call',%s,%s)",
+                      (u, J({k: e.get(k) for k in ("el_conversation_id", "duration_secs", "title", "call_successful")}),
+                       at))
         elif t == "kb_chunk":
             c.execute("REPLACE INTO orch_kb_chunks (chunk_id,doc_id,title,category,status,version,text,content_hash,updated_at) "
                       "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
