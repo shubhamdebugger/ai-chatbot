@@ -80,8 +80,9 @@ def n_gate(st):
         if last_greet and (now - parse(last_greet)).total_seconds() < S.get("greeting_min_gap_hours", 3) * 3600:
             g, reason = policy.GATE_SILENT, "GREETED_RECENTLY"
     st["gate"], st["gate_line"], st["gate_reason"] = g, line, reason
+    st["smalltalk"] = line if reason == "R-SMALLFX" else ""   # for R-SMALLFX the slot holds the category
     if g == policy.GATE_FIXED:
-        st["decision"] = Decision("FIXED_GATE", reason, fixed_line=line)
+        st["decision"] = Decision("FIXED_GATE", reason, fixed_line="" if st["smalltalk"] else line)
         st["labels"] = defaults(st["masked"])
     return st
 
@@ -174,22 +175,58 @@ def n_retrieve(st):
 
 
 # ------------------------------------------------------------------ compose
+ROT_TWO = ("A", "B")
+ROT_THREE = ("A", "B", "C")
+
+
+def _rotate(rec, line_id, options):
+    """A/B(/C) variants, one per turn, remembered for this session."""
+    rot = rec["session"].setdefault("fx_rot", {})
+    i = rot.get(line_id, 0) % len(options)
+    rot[line_id] = i + 1
+    return options[i]
+
+
+def _smalltalk_line(rec, st, cat, disclosed_now):
+    """(line id, variant) for a zero-AI small-talk turn (R-SMALLFX)."""
+    if cat == "greeting":
+        if disclosed_now:
+            return "", ""                      # never disclosed before → FX-01 alone
+        if rec["session"].get("greeted_this_session"):
+            return "FX-26", ""
+        if st.get("new_session") and rec["journey"].get("last_topic"):
+            return "FX-25", ""                 # {topic} = the last knowledge doc used
+        return "FX-24", _rotate(rec, "FX-24", ROT_THREE)
+    fx = {"how_are_you": "FX-27", "what_doing": "FX-28", "bye": "FX-29",
+          "thanks": "FX-30", "sorry": "FX-31"}.get(cat)
+    return (fx, _rotate(rec, fx, ROT_TWO)) if fx else ("", "")
+
+
 def n_compose(st):
     rec, now, d = st["rec"], st["now"], st["decision"]
     lang = st["labels"].get("language") or rec["profile"].get("language", "hinglish")
     name = rec["profile"].get("name") or ""
     st["bubbles"], st["ai_data"] = [], {}
     B = st["bubbles"]
+    cat = st.get("smalltalk", "")
     # 1. Disclosure before anything else, once in his life (FX-01)
+    disclosed_now = False
     if not rec["journey"]["disclosed"]:
         B.append({"id": "FX-01", "kind": "fixed", "text": PACK.fixed("FX-01", lang, name=name)})
         rec["journey"]["disclosed"] = True
+        disclosed_now = True
     # 2. The fixed line for this action, with values filled by code
-    fx = d.fixed_line
+    fx, variant = d.fixed_line, ""
     if d.action in ("HAND_OVER_PERSON",):
         fx = "FX-08" if policy.in_calling_hours(now) else "FX-07"
+    if cat:                                     # zero-AI small talk: one line per category (R-SMALLFX)
+        fx, variant = _smalltalk_line(rec, st, cat, disclosed_now)
+        if cat == "greeting":
+            rec["session"]["greeted_this_session"] = True
     if fx:
         vals = {"name": name, "limit": S.get("education_questions_per_day", 30)}
+        if fx == "FX-25":
+            vals["topic"] = rec["journey"].get("last_topic", "")
         if fx == "FX-10":
             vals["case_no"] = open_case(rec, st["store"], "grievance", st["masked"], now)
             _ev(st, "case", case_no=vals["case_no"], kind="grievance", text=st["masked"])
@@ -214,7 +251,7 @@ def n_compose(st):
             _ev(st, "callback", **cb)
         if fx == "FX-09":
             rec["journey"]["consent_line_given"] = True
-        B.append({"id": fx, "kind": "fixed", "text": PACK.fixed(fx, lang, **vals)})
+        B.append({"id": fx, "kind": "fixed", "text": PACK.fixed(fx, lang, variant=variant, **vals)})
     # 3. Tanya's own words, unless the action is fixed-only
     if d.action not in FIXED_ONLY and d.action not in ("SUPPORT_CASE", "FIXED_GATE"):
         system, ex_ids = build(d.action, rec, st["labels"], mm.trial_day(rec, now), st["hits"], d.addon,
@@ -301,6 +338,8 @@ def n_after(st):
     if data.get("last_promise"):
         rec["journey"]["last_promise"] = data["last_promise"]
         rec["journey"]["last_promise_at"] = iso(now)
+    if delivered_ai and st.get("hits"):
+        rec["journey"]["last_topic"] = st["hits"][0].get("title", "")   # for FX-25
     if st["kind"] == "app_open" and st["bubbles"]:
         rec["journey"]["greeted_at"] = iso(now)
     # her messages, word for word

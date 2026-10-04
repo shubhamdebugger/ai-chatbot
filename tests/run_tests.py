@@ -11,7 +11,7 @@ import os
 import sys
 import tempfile
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -596,6 +596,84 @@ def voice_tools_trust_only_the_signed_context():
     assert not save_fact(s, ctx, "password", "x", "", NIGHT)["saved"]
     chat = recent_chat(s, None, ctx, 5)
     assert chat["source"] == "memory" and chat["messages"][0]["text"] == "Hello"
+# ---------------------------------------------------------------- zero-AI small talk (R-SMALLFX)
+@test
+def smalltalk_greeting_first_ever_is_disclosure_only():
+    s = fresh_store()
+    st = turn(s, "U1001", "Hii")
+    assert [b["id"] for b in st["bubbles"]] == ["FX-01"], st["bubbles"]
+    assert st["llm_calls"] == [] and st["trace"]["gate"] == "R-SMALLFX", st["trace"]
+
+
+@test
+def smalltalk_greeting_new_session_is_fx24():
+    s = fresh_store()
+    turn(s, "U1001", "Hii")                                   # FX-01, greeted in session 1
+    st = turn(s, "U1001", "Hello", now=NIGHT + timedelta(hours=2))   # new session, no past topic
+    assert [b["id"] for b in st["bubbles"]] == ["FX-24"], st["bubbles"]
+    assert st["llm_calls"] == [], st["llm_calls"]
+
+
+@test
+def smalltalk_greeting_twice_same_session_is_fx26():
+    s = fresh_store()
+    turn(s, "U1001", "Hii")                                   # FX-01 only
+    st = turn(s, "U1001", "Hi", now=NIGHT + timedelta(minutes=1))    # same session, greeted already
+    assert [b["id"] for b in st["bubbles"]] == ["FX-26"], st["bubbles"]
+    assert st["llm_calls"] == [], st["llm_calls"]
+
+
+@test
+def smalltalk_how_are_you_is_fx27():
+    s = fresh_store()
+    st = turn(s, "U1001", "Kaise ho?")
+    assert [b["id"] for b in st["bubbles"]] == ["FX-01", "FX-27"], st["bubbles"]
+    assert st["llm_calls"] == [], st["llm_calls"]
+
+
+@test
+def smalltalk_what_doing_is_fx28():
+    s = fresh_store()
+    st = turn(s, "U1001", "Kya kar rahi ho?")
+    assert [b["id"] for b in st["bubbles"]] == ["FX-01", "FX-28"], st["bubbles"]
+    assert st["llm_calls"] == [], st["llm_calls"]
+
+
+@test
+def smalltalk_bye_is_fx29_and_keeps_the_session():
+    s = fresh_store()
+    st = turn(s, "U1001", "Bye")
+    assert [b["id"] for b in st["bubbles"]] == ["FX-01", "FX-29"], st["bubbles"]
+    assert st["llm_calls"] == [], st["llm_calls"]
+    sid = s.get("U1001")["session"]["id"]
+    turn(s, "U1001", "Kaise ho?", now=NIGHT + timedelta(minutes=1))
+    assert s.get("U1001")["session"]["id"] == sid             # bye does not end the session
+
+
+@test
+def smalltalk_thanks_is_fx30():
+    s = fresh_store()
+    st = turn(s, "U1001", "Thanks")
+    assert [b["id"] for b in st["bubbles"]] == ["FX-01", "FX-30"], st["bubbles"]
+    assert st["llm_calls"] == [], st["llm_calls"]
+
+
+@test
+def smalltalk_sorry_is_fx31():
+    s = fresh_store()
+    st = turn(s, "U1001", "Sorry")
+    assert [b["id"] for b in st["bubbles"]] == ["FX-01", "FX-31"], st["bubbles"]
+    assert st["llm_calls"] == [], st["llm_calls"]
+
+
+@test
+def smalltalk_with_a_whole_topic_goes_to_the_ai():
+    s = fresh_store()
+    for msg in ("Thanks, aur option kya hota hai?", "Hi, stop-loss kya hai?"):
+        st = turn(s, "U1001", msg)
+        assert st["gate"] == "go" and st["llm_calls"], (msg, st["gate"], st["llm_calls"])
+        assert not any(b["id"] in ("FX-24", "FX-26", "FX-27", "FX-28", "FX-29", "FX-30", "FX-31")
+                       for b in st["bubbles"]), (msg, st["bubbles"])
 
 
 # ---------------------------------------------------------------- optional: Redis and MySQL

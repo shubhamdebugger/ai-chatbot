@@ -38,6 +38,7 @@ class TurnState(TypedDict, total=False):
     gate: str
     gate_line: Any
     gate_reason: str
+    smalltalk: str
     limited: bool
     labels: dict
     decision: Any
