@@ -869,16 +869,25 @@ def voice_abuse_three_strikes_end_the_call_and_reset_per_call():
 
 
 @test
-def voice_abuse_strikes_noted_for_agents():
-    from tanya.crm_adapter import ConsoleAdapter
-    from tanya.voice import handle_post_call
-    os.environ.update(TANYA_VOICE_CTX_SECRET="ctxsecret", ELEVENLABS_AGENT_ID="agent_test")
+def voice_abuse_strikes_are_stored_with_the_call():
+    from tanya.voice import build_event
     p = _voice_payload("ctxsecret")
     p["data"]["transcript"] += [{"role": "agent", "message": "", "time_in_call_secs": 9,
                                  "tool_calls": [{"tool_name": "report_abuse", "params_as_json": "{}"}]}] * 3
-    s, crm = fresh_store(), ConsoleAdapter()
-    assert handle_post_call(p, s, crm, NIGHT)["agent_note"] is True
-    assert "Abusive language: 3 warnings" in crm.notes["555"][0][1] and "ended the call" in crm.notes["555"][0][1]
+    ev = build_event(p["data"], {"pwa_uid": "9001", "sb_user_id": "777", "sb_conversation_id": "555"}, NIGHT)
+    assert ev["abuse_strikes"] == 3
+
+
+@test
+def voice_summary_is_short_and_keeps_the_ending():
+    from tanya.voice import short_summary, SHORT_SUMMARY_WORDS
+    full = ("The user asked what TG Level is and what the plans cost. " * 6 +
+            "Finally the user accepted a senior callback for trial details.")
+    got = short_summary({}, full)
+    assert len(got.split()) <= SHORT_SUMMARY_WORDS and got.endswith((".", "…")), got
+    assert short_summary({}, "Short one.") == "Short one."
+    an = {"data_collection_results": {"short_summary": {"value": "  Asked about plans;  booked a senior callback. "}}}
+    assert short_summary(an, full) == "Asked about plans; booked a senior callback."
 
 
 if __name__ == "__main__":

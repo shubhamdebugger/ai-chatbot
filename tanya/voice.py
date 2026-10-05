@@ -93,6 +93,24 @@ def _call_limit(dyn: dict) -> int:
         return DEFAULT_CALL_LIMIT_SECS
 
 
+SHORT_SUMMARY_WORDS = 40
+
+
+def short_summary(an: dict, full: str) -> str:
+    """The card/note summary: ElevenLabs' data-collection item 'short_summary' (English, ~40 words), else the
+    full summary cut to ~40 words at a sentence end. Always masked by the caller."""
+    v = ((an.get("data_collection_results") or {}).get("short_summary") or {}).get("value")
+    text = " ".join(str(v).split()) if isinstance(v, str) else ""
+    if text:
+        return text
+    words = " ".join(full.split()).split(" ")
+    if len(words) <= SHORT_SUMMARY_WORDS:
+        return " ".join(words)
+    cut = " ".join(words[:SHORT_SUMMARY_WORDS])
+    end = max(cut.rfind(". "), cut.rfind("? "), cut.rfind("! "))
+    return cut[:end + 1] if end > len(cut) // 2 else cut.rstrip(",;:") + "…"
+
+
 def build_event(data: dict, ctx: dict, now) -> dict:
     """One 'voice_call' event for the persister (orch_voice_calls). Transcript is masked."""
     md, an = data.get("metadata") or {}, data.get("analysis") or {}
@@ -112,7 +130,8 @@ def build_event(data: dict, ctx: dict, now) -> dict:
             lines.append({"role": turn.get("role"), "at_secs": turn.get("time_in_call_secs"), "text": text,
                           **({"tools": tools} if tools else {})})
     start = md.get("start_time_unix_secs")
-    summary = mask(an.get("transcript_summary") or "")[0]
+    full_summary = mask(an.get("transcript_summary") or "")[0]
+    summary = mask(short_summary(an, full_summary))[0]
     dyn = (data.get("conversation_initiation_client_data") or {}).get("dynamic_variables") or {}
     kind = end_kind(md.get("termination_reason"), md.get("call_duration_secs"), _call_limit(dyn))
     return {
@@ -132,6 +151,7 @@ def build_event(data: dict, ctx: dict, now) -> dict:
         "call_successful": an.get("call_successful"),
         "title": an.get("call_summary_title"),
         "summary": summary,
+        "full_summary": full_summary,       # not persisted; the agent note adds it only when it adds detail
         "kb_queries": kb_queries,
         "abuse_strikes": abuse,
         "transcript": lines,
@@ -147,6 +167,9 @@ def agent_note(ev: dict) -> str:
     when = datetime.fromisoformat(ev["started_at"]).strftime("%d %b %Y, %H:%M IST") if ev.get("started_at") else ""
     out = [f"🎙️ Voice call with Ms Tanya (AI) — {when} · {secs // 60}m {secs % 60:02d}s",
            f"Summary: {ev.get('summary') or '(no summary)'}"]
+    full = ev.get("full_summary") or ""
+    if full and full != ev.get("summary") and not full.startswith((ev.get("summary") or "").rstrip("…")):
+        out.append(f"Detail: {full}")
     if ev.get("kb_queries"):
         out.append("Knowledge searched: " + "; ".join(ev["kb_queries"][:6]))
     if ev.get("abuse_strikes"):
