@@ -93,6 +93,12 @@ def mock_complete(system, messages):
     if "TASK: CHECK" in system:
         bad = re.search(r"(guaranteed profit|sure shot call|buy nifty|target \d+)", last.lower())
         return json.dumps({"pass": not bad, "problems": [bad.group(0)] if bad else []})
+    if "TASK: WINDUP" in system:
+        return json.dumps({"recap": "(mock) recap of what we covered together",
+                           "open_doubt": "",
+                           "wrapup_queries": ["Chaliye, do line mein recap de doon?",
+                                              "Koi doubt hai jo main phir se simple mein samjha doon?",
+                                              "Team se baat karwa doon aage ke liye?"]}, ensure_ascii=False)
     if "TASK: NOTE" in system:
         return json.dumps({"note": ["(mock) session summary line 1", "(mock) line 2", "(mock) line 3"],
                            "last_promise": ""})

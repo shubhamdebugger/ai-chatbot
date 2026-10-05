@@ -26,6 +26,7 @@ class LLMResult:
     purpose: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
+    total_tokens: int = 0       # what the provider counted for this call (0 for the mock provider)
     ms: int = 0
     cost_inr: float = 0.0
     error: str = ""
@@ -97,7 +98,8 @@ def _anthropic(model, system, messages, temperature, max_tokens, json_mode, time
     j = r.json()
     text = "".join(b.get("text", "") for b in j.get("content", []) if b.get("type") == "text")
     u = j.get("usage", {})
-    return text, u.get("input_tokens", 0), u.get("output_tokens", 0)
+    tin, tout = u.get("input_tokens", 0), u.get("output_tokens", 0)
+    return text, tin, tout, tin + tout
 
 
 def _openai(model, system, messages, temperature, max_tokens, json_mode, timeout, schema=None):
@@ -114,7 +116,8 @@ def _openai(model, system, messages, temperature, max_tokens, json_mode, timeout
     j = r.json()
     text = j["choices"][0]["message"].get("content") or ""
     u = j.get("usage", {})
-    return text, u.get("prompt_tokens", 0), u.get("completion_tokens", 0)
+    tin, tout = u.get("prompt_tokens", 0), u.get("completion_tokens", 0)
+    return text, tin, tout, u.get("total_tokens") or (tin + tout)
 
 
 def _google(model, system, messages, temperature, max_tokens, json_mode, timeout, schema=None):
@@ -138,13 +141,16 @@ def _google(model, system, messages, temperature, max_tokens, json_mode, timeout
     parts = (j.get("candidates") or [{}])[0].get("content", {}).get("parts", [])
     text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
     u = j.get("usageMetadata", {})
-    return text, u.get("promptTokenCount", 0), u.get("candidatesTokenCount", 0) + u.get("thoughtsTokenCount", 0)
+    tin = u.get("promptTokenCount", 0)
+    tout = u.get("candidatesTokenCount", 0) + u.get("thoughtsTokenCount", 0)
+    # Gemini counts everything (prompt + candidates + thoughts) in usageMetadata.totalTokenCount
+    return text, tin, tout, u.get("totalTokenCount") or (tin + tout)
 
 
 def _mock(model, system, messages, temperature, max_tokens, json_mode, timeout, schema=None):
     from .llm_mock import mock_complete
     text = mock_complete(system, messages)
-    return text, len(system) // 4, len(text) // 4
+    return text, len(system) // 4, len(text) // 4, 0     # mock provider = 0 tokens
 
 
 _PROVIDERS = {"anthropic": _anthropic, "openai": _openai, "google": _google, "mock": _mock}
@@ -175,12 +181,12 @@ class LLM:
             for attempt in range(2):
                 t0 = time.time()
                 try:
-                    text, tin, tout = _PROVIDERS[provider](model, system, normalise_messages(messages),
-                                                           temperature, max_tokens, json_mode, timeout,
-                                                           schema=schema if json_mode else None)
+                    text, tin, tout, ttok = _PROVIDERS[provider](model, system, normalise_messages(messages),
+                                                                  temperature, max_tokens, json_mode, timeout,
+                                                                  schema=schema if json_mode else None)
                     p_in, p_out = S.price(model)
                     cost = (tin * p_in + tout * p_out) / 1_000_000 * self.usd_inr
-                    res = LLMResult(True, text, provider, model, purpose, tin, tout,
+                    res = LLMResult(True, text, provider, model, purpose, tin, tout, ttok,
                                     int((time.time() - t0) * 1000), round(cost + spent, 4))
                     if json_mode:
                         res.data = parse_json(text) or {}

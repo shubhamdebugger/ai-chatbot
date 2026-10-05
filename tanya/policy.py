@@ -8,6 +8,8 @@ whether she may answer at all, and in what mode:
 - Small talk: the whole message is a greeting / how are you / bye / thanks / sorry
   → a fixed line only, no AI call (R-SMALLFX).
 - Spend ceiling: at 100% of the day's AI budget → fixed line FX-05.
+- Lead token budget: at 100% of THIS lead's token budget → no AI call; a warm closing
+  (FX-32 first, FX-34 after) or, for a buying / complaint lead, the human handoff (R01-TOKENS).
 - Consent: no DPDP agreement in the app → answer only, nothing remembered or sold.
 """
 import re
@@ -22,6 +24,14 @@ GATE_FIXED = "fixed"        # a fixed line only, no AI call
 GUARANTEE_RX = re.compile(r"guarantee|gurantee|gurrantee|guaranty|pakka|sure shot|100%", re.I)
 MONEY_RX = re.compile(r"paisa|paise|money|return|profit|double|dugna", re.I)
 GRIEVANCE_RX = re.compile(r"fraud|refund|cheat|dhokha|complaint", re.I)
+
+# ---- the lead's own words for the two exceptions to the wind-up (no bare 'plan', 'pay', 'join',
+# ---- 'problem' or 'issue': a normal trading message must never be mistaken for them)
+BUY_INTENT_RX = re.compile(r"fees?\s*(kitni|kitna|hai)|kitni\s+fees|fees\s+kitni|how\s+to\s+join"
+                           r"|joining|join\s+karna|plan\s+lena|plan\s+chahiye|payment\s+karna"
+                           r"|pay\s+karna|subscribe|kharidna|enroll", re.I)
+COMPLAINT_RX = re.compile(r"refund|complaint|fraud|cheat|dhokha|scam|payment\s+(failed|fail|nahi)"
+                          r"|paisa\s+wapas|dikkat|problem\s+(ho|hai)|not\s+working|kaam\s+nahi", re.I)
 
 # ---- zero-AI small talk (R-SMALLFX): the WHOLE message must be one plain category
 FILLER_WORDS = {"tanya", "ji", "mam", "maam"}          # optional words, dropped before matching
@@ -105,7 +115,57 @@ def gate(rec, store, now, injection_flag: bool, text: str = ""):
     ceiling = S.get("daily_ai_spend_ceiling_inr", 200)
     if store.ledger_get(now) >= ceiling:
         return GATE_FIXED, "FX-05", "R01"
+    if lead_budget_stop(store, rec, now):
+        # this lead's own token budget is used up → no AI call at all this turn;
+        # n_gate picks FX-32 / FX-34, or the human handoff for a buying / complaint lead
+        return GATE_FIXED, "FX-32", "R01-TOKENS"
     return GATE_GO, None, "OK"
+
+
+# ------------------------------------------------------------------ per-lead token budget
+def lead_token_budget() -> int:
+    """One lead's own AI token budget (config: lead_token_budget)."""
+    return int(S.get("lead_token_budget", 50000))
+
+
+def lead_token_estimate(rec) -> int:
+    """What this turn will probably cost: the average of his recent turns (1500 when unknown)."""
+    hist = rec.get("counters", {}).get("turn_tokens") or []
+    if not hist:
+        return 1500
+    return int(round(sum(hist) / len(hist)))
+
+
+def lead_tokens(store, rec, now) -> int:
+    return store.tokens_get(rec["user_id"], now)
+
+
+def lead_budget_stop(store, rec, now) -> bool:
+    """True when this turn would take the lead to 100% of his budget → skip every AI call."""
+    return lead_tokens(store, rec, now) + lead_token_estimate(rec) >= lead_token_budget()
+
+
+def windup_due(store, rec, now) -> bool:
+    """True once his usage first passes windup_trigger_pct of the budget."""
+    return lead_tokens(store, rec, now) >= lead_token_budget() * S.get("windup_trigger_pct", 0.70)
+
+
+def budget_exception_kind(text: str) -> str:
+    """"complaint" | "buying" | "" — his own words, used before the understand call (no AI call)."""
+    if COMPLAINT_RX.search(text or ""):
+        return "complaint"
+    if BUY_INTENT_RX.search(text or ""):
+        return "buying"
+    return ""
+
+
+def budget_exception(text: str, labels=None) -> bool:
+    """Buying intent or a complaint → never wind this lead up (at 100% → the human handoff instead).
+    understand's labels win once it has run; before it, or if it failed, only his words count."""
+    on = (labels or {}).get("labels") or {}
+    if on and not labels.get("failed", False):
+        return bool(on.get("purchase_intent", {}).get("on") or on.get("grievance", {}).get("on"))
+    return bool(budget_exception_kind(text))
 
 
 def spend_alert(store, now) -> bool:

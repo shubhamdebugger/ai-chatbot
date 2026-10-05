@@ -2,8 +2,9 @@
 
 Plain English — the steps, in order (Architecture v3.2 §5.2):
   load       → his record from memory (Redis in production), new session / new day, mask private numbers
-  gate       → HUMAN mode? kill switch? injection? spend ceiling?  (may stop here or give a fixed line)
+  gate       → HUMAN mode? kill switch? injection? spend ceiling? his token budget? (may stop here or give a fixed line)
   understand → labels with evidence (AI, fast model)
+  budget_check → the 70% wind-up alert (SET NX) + ONE plan call for this lead
   decide     → ONE action by the priority table (code)
   retrieve   → approved knowledge / plan / earlier messages
   compose    → fixed lines + Tanya's written reply (AI)
@@ -15,6 +16,7 @@ import re
 
 from . import memory_model as mm
 from . import policy
+from . import windup
 from .brief import lead_brief
 from .content_pack import PACK
 from .decider import Decision, FIXED_ONLY, COUNTS_AS_EDUCATION, NO_EMOJI, decide
@@ -37,7 +39,8 @@ def _ev(st, etype, **data):
 
 def _usage(st, res):
     st["llm_calls"].append({"purpose": res.purpose, "provider": res.provider, "model": res.model,
-                            "in": res.input_tokens, "out": res.output_tokens, "ms": res.ms,
+                            "in": res.input_tokens, "out": res.output_tokens, "tokens": res.total_tokens,
+                            "ms": res.ms,
                             "cost_inr": res.cost_inr, "ok": res.ok, "error": res.error})
 
 
@@ -80,8 +83,52 @@ def n_gate(st):
     st["gate"], st["gate_line"], st["gate_reason"] = g, line, reason
     st["smalltalk"] = line if reason == "R-SMALLFX" else ""   # for R-SMALLFX the slot holds the category
     if g == policy.GATE_FIXED:
-        st["decision"] = Decision("FIXED_GATE", reason, fixed_line="" if st["smalltalk"] else line)
-        st["labels"] = defaults(st["masked"])
+        if reason == "R01-TOKENS":
+            _budget_stop(st)
+        else:
+            st["decision"] = Decision("FIXED_GATE", reason, fixed_line="" if st["smalltalk"] else line)
+            st["labels"] = defaults(st["masked"])
+    return st
+
+
+def _budget_stop(st):
+    """100% of HIS token budget → no AI call at all this turn.
+    His own words pick the target: a buying or complaint lead goes to the existing human handoff,
+    anyone else gets the warm closing line — FX-32 the first time, the shorter FX-34 after that."""
+    rec = st["rec"]
+    st["labels"] = defaults(st["masked"])
+    kind = policy.budget_exception_kind(st.get("masked", ""))
+    if kind == "complaint":
+        st["decision"] = Decision("LOG_GRIEVANCE", st["gate_reason"], fixed_line="FX-10")
+    elif kind == "buying":
+        st["decision"] = Decision("HAND_OVER_PURCHASE", st["gate_reason"], fixed_line="FX-14",
+                                  selling_allowed=True)
+    else:
+        fx = "FX-34" if rec["journey"].get("budget_closed") else "FX-32"
+        rec["journey"]["budget_closed"] = True
+        st["gate_line"] = fx
+        st["decision"] = Decision("FIXED_GATE", st["gate_reason"], fixed_line=fx)
+    st["budget_no_ai"] = True
+
+
+# ------------------------------------------------------------------ budget_check (the 70% wind-up)
+def n_budget_check(st):
+    """First time he passes windup_trigger_pct: alert exactly once (SET NX on tanya:windup:{id}),
+    then ONE plan call. A buying / complaint lead gets the alert but no wind-up queries."""
+    if st.get("gate") != policy.GATE_GO:
+        return st
+    rec, now, store, uid = st["rec"], st["now"], st["store"], st["user_id"]
+    if not policy.windup_due(store, rec, now):
+        return st
+    if not store.windup_mark(uid):                   # SET NX — fires exactly once per lead
+        return st
+    store.alerts_push({"lead_id": uid, "type": "windup_70", "tokens_used": policy.lead_tokens(store, rec, now),
+                       "budget": policy.lead_token_budget(), "timestamp": iso(now)})
+    if policy.budget_exception(st.get("masked", ""), st.get("labels")):
+        return st                                    # exception: never wind this lead up
+    plan, res = windup.build(st)
+    _usage(st, res)                                  # the plan call is counted like any AI call
+    store.windup_plan_save(uid, plan)
     return st
 
 
@@ -250,13 +297,19 @@ def n_compose(st):
         if fx == "FX-09":
             rec["journey"]["consent_line_given"] = True
         B.append({"id": fx, "kind": "fixed", "text": PACK.fixed(fx, lang, variant=variant, **vals)})
-    # 3. Tanya's own words, unless the action is fixed-only
-    if d.action not in FIXED_ONLY and d.action not in ("SUPPORT_CASE", "FIXED_GATE"):
+    # 3. Tanya's own words, unless the action is fixed-only (or the token budget is used up)
+    if d.action not in FIXED_ONLY and d.action not in ("SUPPORT_CASE", "FIXED_GATE") \
+            and not st.get("budget_no_ai"):
         system, ex_ids = build(d.action, rec, st["labels"], mm.trial_day(rec, now), st["hits"], d.addon,
                                d.addon_detail, st.get("plan_row"), st.get("why_line"))
         if st.get("past"):
             system = system.replace("TASK: REPLY", "EARLIER MESSAGES (quote with their date if he asks):\n" +
                                     "\n".join(st["past"]) + "\n\nTASK: REPLY")
+        hint, query = windup.hint(st)                # one wind-up query per turn, after the alert
+        if hint:
+            system = system + "\n\n" + hint
+            if query:
+                st["windup_query"] = query
         msgs = mm.history_for_prompt(rec)
         if st["kind"] == "app_open":
             msgs = msgs + [{"role": "user", "content": "(he opened the app)"}]
@@ -324,6 +377,8 @@ def n_after(st):
     st.setdefault("guard", {})
     st.setdefault("labels", defaults(st.get("masked", "")))
     delivered_ai = any(b["kind"] == "ai" for b in st["bubbles"])
+    if st.get("windup_query") and delivered_ai:
+        windup.mark_used(st)                        # a query counts only if the reply was sent
     data = st.get("ai_data") or {}
     # counters and journey
     if d.action in COUNTS_AS_EDUCATION and delivered_ai:
@@ -351,6 +406,12 @@ def n_after(st):
     # cost ledger
     cost = round(sum(c["cost_inr"] for c in st["llm_calls"]), 4)
     today_total = store.ledger_add(cost, now) if cost else store.ledger_get(now)
+    # his own token budget — next to the spend ledger (tanya:tokens:{lead_id}, INCRBY)
+    tokens = sum(c.get("tokens", 0) for c in st["llm_calls"])
+    store.tokens_add(st["user_id"], tokens, now)
+    hist = rec["counters"].setdefault("turn_tokens", [])
+    hist.append(tokens)                             # for the next turn's cost estimate
+    rec["counters"]["turn_tokens"] = hist[-10:]
     # trace (AI-C15)
     L = st["labels"]["labels"]
     st["trace"] = {
