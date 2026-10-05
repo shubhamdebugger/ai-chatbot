@@ -96,12 +96,14 @@ def _call_limit(dyn: dict) -> int:
 def build_event(data: dict, ctx: dict, now) -> dict:
     """One 'voice_call' event for the persister (orch_voice_calls). Transcript is masked."""
     md, an = data.get("metadata") or {}, data.get("analysis") or {}
-    lines, masked, kb_queries, callback_asked = [], set(), [], False
+    lines, masked, kb_queries, callback_asked, abuse  = [], set(), [], False, 0
     for turn in data.get("transcript") or []:
         text, kinds = mask((turn.get("message") or "").strip())
         masked.update(kinds)
         tools = [c.get("tool_name") for c in turn.get("tool_calls") or [] if c.get("tool_name")]
         for c in turn.get("tool_calls") or []:
+            if c.get("tool_name") == "report_abuse":
+                abuse += 1
             if c.get("tool_name") == "search_knowledge":
                 kb_queries.append(mask(c.get("params_as_json") or "")[0][:200])
             elif c.get("tool_name") == "request_callback":
@@ -131,11 +133,30 @@ def build_event(data: dict, ctx: dict, now) -> dict:
         "title": an.get("call_summary_title"),
         "summary": summary,
         "kb_queries": kb_queries,
+        "abuse_strikes": abuse,
         "transcript": lines,
         "masked": sorted(masked),
         "cost": md.get("cost"),
         "at": iso(now),
     }
+
+
+def agent_note(ev: dict) -> str:
+    """The note agents see on the CRM conversation (never shown to the customer)."""
+    secs = int(ev.get("duration_secs") or 0)
+    when = datetime.fromisoformat(ev["started_at"]).strftime("%d %b %Y, %H:%M IST") if ev.get("started_at") else ""
+    out = [f"🎙️ Voice call with Ms Tanya (AI) — {when} · {secs // 60}m {secs % 60:02d}s",
+           f"Summary: {ev.get('summary') or '(no summary)'}"]
+    if ev.get("kb_queries"):
+        out.append("Knowledge searched: " + "; ".join(ev["kb_queries"][:6]))
+    if ev.get("abuse_strikes"):
+        n = ev["abuse_strikes"]
+        out.append(f"⚠️ Abusive language: {n} warning{'s' if n != 1 else ''}" +
+                   (" — Tanya ended the call." if n >= 3 else "."))
+    if ev.get("ended_reason"):
+        out.append(f"Ended: {ev['ended_reason']}")
+    out.append(f"Full transcript: orch_voice_calls · {ev.get('el_conversation_id')}")
+    return "\n".join(out)
 
 
 FACTS_SYSTEM = """TASK: VOICE FACTS

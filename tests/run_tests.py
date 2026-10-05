@@ -853,6 +853,33 @@ if os.environ.get("TEST_MYSQL") == "1":
             c.execute("SELECT state FROM orch_callbacks WHERE user_id='U1001'")
             assert c.fetchone()[0] == "requested"
 
+@test
+def voice_abuse_three_strikes_end_the_call_and_reset_per_call():
+    from tanya.voice_context import report_abuse, ABUSE_WARNING, ABUSE_FINAL
+    s = fresh_store()
+    ctx = {"pwa_uid": "9001", "sb_user_id": "777", "sb_conversation_id": "555"}
+    r1, r2, r3 = (report_abuse(s, ctx, "1791008700") for _ in range(3))
+    for r, n, act, lines in ((r1, 1, "warn", ABUSE_WARNING), (r2, 2, "warn", ABUSE_WARNING), (r3, 3, "end", ABUSE_FINAL)):
+        assert (r["strike"], r["action"]) == (n, act), r
+        assert {k: r[f"say_{k}"] for k in ("english", "hinglish", "hindi")} == lines, r
+    assert "end_call" in r3["then"] and "end_call" not in r1["then"]
+    assert report_abuse(s, ctx, "1791008700")["action"] == "end", "stays ended after the 3rd"
+    assert report_abuse(s, ctx, "1791009999")["strike"] == 1, "a new call starts at zero"
+    assert report_abuse(s, {**ctx, "pwa_uid": "9002"}, "1791008700")["strike"] == 1, "other caller unaffected"
+
+
+@test
+def voice_abuse_strikes_noted_for_agents():
+    from tanya.crm_adapter import ConsoleAdapter
+    from tanya.voice import handle_post_call
+    os.environ.update(TANYA_VOICE_CTX_SECRET="ctxsecret", ELEVENLABS_AGENT_ID="agent_test")
+    p = _voice_payload("ctxsecret")
+    p["data"]["transcript"] += [{"role": "agent", "message": "", "time_in_call_secs": 9,
+                                 "tool_calls": [{"tool_name": "report_abuse", "params_as_json": "{}"}]}] * 3
+    s, crm = fresh_store(), ConsoleAdapter()
+    assert handle_post_call(p, s, crm, NIGHT)["agent_note"] is True
+    assert "Abusive language: 3 warnings" in crm.notes["555"][0][1] and "ended the call" in crm.notes["555"][0][1]
+
 
 if __name__ == "__main__":
     timeutil.set_clock(None)
