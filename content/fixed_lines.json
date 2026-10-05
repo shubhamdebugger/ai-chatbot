@@ -234,5 +234,40 @@
         "hindi": "कोई दिक्कत नहीं जी 😊 आगे बताइए।"
       }
     }
+  },
+  "FX-32": {
+    "moment": "Lead token budget used up - warm closing (first time only, then FX-34)",
+    "status": "DRAFT",
+    "english": "We've covered a lot together — you asked your questions and learned the basics step by step, and that is real progress. Anything further you need, our human team is right here — just say the word and I'll pass it to them.",
+    "hinglish": "Humne saath mein kaafi kuch seekha — aapne sawaal pooche aur basics ko step by step samjha, aur woh asli progress hai. Aage kuch bhi chahiye toh hamari team yahin hai — bas bol dijiye, main aage team ko de deti hoon.",
+    "hindi": "हमने साथ में बहुत कुछ सीखा — आपने सवाल पूछे और बेसिक्स को स्टेप बाय स्टेप समझा, और यही असली प्रोग्रेस है। आगे जो भी चाहिए, हमारी टीम यहीं है — बस बोल दीजिए, मैं टीम को आगे दे देती हूँ।"
+  },
+  "FX-33": {
+    "moment": "Wind-up fallback queries - used by code when the wind-up call fails (never shown as a line)",
+    "status": "DRAFT",
+    "queries": {
+      "english": [
+        "Shall I give you a two-line recap of everything we covered?",
+        "Was there any earlier doubt I should explain once more, in simpler words?",
+        "Would you like me to connect you with our team for the next step?"
+      ],
+      "hinglish": [
+        "Jo humne cover kiya, uska do line mein recap de doon?",
+        "Koi purana doubt hai jise main ek baar phir simple shabdon mein samjha doon?",
+        "Agla step lene ke liye main aapko team se jod doon?"
+      ],
+      "hindi": [
+        "जो हमने सीखा, उसका दो लाइनों में रीकैप दूँ?",
+        "कोई पुराना डाउट है जिसे मैं एक बार फिर आसान शब्दों में समझा दूँ?",
+        "अगला कदम लेने के लिए मैं आपको टीम से जोड़ दूँ?"
+      ]
+    }
+  },
+  "FX-34": {
+    "moment": "Lead token budget used up - shorter closing after FX-32 was already shown",
+    "status": "DRAFT",
+    "english": "That is a lot of ground covered — well done. Anything else you need, our human team is right here, just say the word.",
+    "hinglish": "Aaj bahut kuch seekha — bahut accha! Aur kuch chahiye toh hamari team yahin hai, bas bol dijiye.",
+    "hindi": "आज बहुत कुछ सीखा — बहुत बढ़िया! और कुछ चाहिए तो हमारी टीम यहीं है, बस बोल दीजिए।"
   }
 }

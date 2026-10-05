@@ -70,6 +70,26 @@
     "owner": "Claude - Architecture 17",
     "note": "Alert shown in the trace at this share of the ceiling"
   },
+  "lead_token_budget": {
+    "value": 50000,
+    "owner": "Claude",
+    "note": "Per-lead AI token budget (tanya:tokens:{lead_id}); at 100% no AI call, closing FX-32 / FX-34"
+  },
+  "windup_trigger_pct": {
+    "value": 0.7,
+    "owner": "Claude",
+    "note": "Share of lead_token_budget at which the wind-up alert (windup_70) fires once per lead"
+  },
+  "windup_context_minutes": {
+    "value": 10,
+    "owner": "Claude",
+    "note": "Only this lead's messages from the last N minutes go into the wind-up call"
+  },
+  "lead_token_budget_reset": {
+    "value": "never",
+    "owner": "Claude",
+    "note": "never | daily (00:00 IST): resets the token counter, tanya:windup:{lead_id} and tanya:windup_plan:{lead_id}"
+  },
   "usd_to_inr": {
     "value": 96,
     "owner": "Claude - checked 25-Sep-2026",
