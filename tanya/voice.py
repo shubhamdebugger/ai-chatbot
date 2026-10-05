@@ -66,12 +66,14 @@ def verify_context(dyn: dict, start_ts, secret: str, max_age=CTX_MAX_AGE_SECS):
 def build_event(data: dict, ctx: dict, now) -> dict:
     """One 'voice_call' event for the persister (orch_voice_calls). Transcript is masked."""
     md, an = data.get("metadata") or {}, data.get("analysis") or {}
-    lines, masked, kb_queries = [], set(), []
+    lines, masked, kb_queries, abuse = [], set(), [], 0
     for turn in data.get("transcript") or []:
         text, kinds = mask((turn.get("message") or "").strip())
         masked.update(kinds)
         tools = [c.get("tool_name") for c in turn.get("tool_calls") or [] if c.get("tool_name")]
         for c in turn.get("tool_calls") or []:
+            if c.get("tool_name") == "report_abuse":
+                abuse += 1
             if c.get("tool_name") == "search_knowledge":
                 kb_queries.append(mask(c.get("params_as_json") or "")[0][:200])
         if text or tools:
@@ -94,6 +96,7 @@ def build_event(data: dict, ctx: dict, now) -> dict:
         "title": an.get("call_summary_title"),
         "summary": summary,
         "kb_queries": kb_queries,
+        "abuse_strikes": abuse,
         "transcript": lines,
         "masked": sorted(masked),
         "cost": md.get("cost"),
@@ -109,6 +112,10 @@ def agent_note(ev: dict) -> str:
            f"Summary: {ev.get('summary') or '(no summary)'}"]
     if ev.get("kb_queries"):
         out.append("Knowledge searched: " + "; ".join(ev["kb_queries"][:6]))
+    if ev.get("abuse_strikes"):
+        n = ev["abuse_strikes"]
+        out.append(f"⚠️ Abusive language: {n} warning{'s' if n != 1 else ''}" +
+                   (" — Tanya ended the call." if n >= 3 else "."))
     if ev.get("ended_reason"):
         out.append(f"Ended: {ev['ended_reason']}")
     out.append(f"Full transcript: orch_voice_calls · {ev.get('el_conversation_id')}")

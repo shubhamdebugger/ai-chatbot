@@ -168,6 +168,12 @@ def voice_tool_save_fact(body: ToolCall, x_tool_secret: str = Header("")):
     return voice_context.save_fact(store, _tool_ctx(body, x_tool_secret), body.field, body.value,
                                    body.his_words, timeutil.now())
 
+@app.post("/voice/tools/report-abuse")
+def voice_tool_report_abuse(body: ToolCall, x_tool_secret: str = Header("")):
+    """Caller used abusive words (once per message). Returns the fixed line and warn/end; 3rd strike ends the call."""
+    return voice_context.report_abuse(store, _tool_ctx(body, x_tool_secret), body.ctx_iat)
+
+
 # ------------------------------------------------------------------ CRM webhook
 @app.post("/webhook/crm")
 async def webhook(request: Request):

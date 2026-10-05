@@ -390,3 +390,43 @@ def request_callback(store, adapter, ctx, reason, preferred_time, confirmed, now
                          "detail": f"{type(e).__name__}: {str(e)[:200]}"}])
     return {"created": True, "promised": phrase,
             "say": f"Tell them a senior will call {phrase}. Do not promise any other time."}
+
+
+# ------------------------------------------------------------------ abusive callers
+# One strike per abusive message (the agent reports it once per message). The count lives here, not
+# in the AI: three strikes end the call. It is per call (the signed ctx_iat is new for every token),
+# so a new call starts at zero. store.once() is atomic (Redis SET NX), so workers share the count.
+ABUSE_MAX_STRIKES = 3
+# Fixed lines, one per language; the agent speaks the one that matches the language the caller is using.
+ABUSE_WARNING = {
+    "english": "Please don't use abusive words. I'm here to help you, but I can't continue the call if this goes on.",
+    "hinglish": "Please abusive words ka istemaal na karein. Main aapki madad ke liye hoon, lekin agar aap aise baat "
+                "karte rahe toh main call jaari nahi rakh paungi.",
+    "hindi": "कृपया अपशब्दों का इस्तेमाल न करें। मैं आपकी मदद के लिए यहाँ हूँ, लेकिन अगर ऐसा चलता रहा तो मैं कॉल "
+             "जारी नहीं रख पाऊँगी।",
+}
+ABUSE_FINAL = {
+    "english": "I'm sorry, but because of the repeated abusive language I'm ending this call now. You are welcome to "
+               "call us again whenever you'd like to talk respectfully. Goodbye.",
+    "hinglish": "Maaf kijiye, baar-baar abusive language ke karan main ab yeh call khatam kar rahi hoon. Jab bhi aap "
+                "respect ke saath baat karna chahein, aap dobara call kar sakte hain. Dhanyavaad, alvida.",
+    "hindi": "माफ़ कीजिए, बार-बार अपशब्द कहने की वजह से मैं अब यह कॉल समाप्त कर रही हूँ। जब भी आप सम्मान से बात करना "
+             "चाहें, आप दोबारा कॉल कर सकते हैं। धन्यवाद, अलविदा।",
+}
+ABUSE_PICK = ("Speak ONE line word for word: say_hindi if the caller speaks Hindi, say_english if English, "
+              "say_hinglish if they mix Hindi and English (or you are unsure).")
+
+
+def report_abuse(store, ctx, ctx_iat) -> dict:
+    """The agent heard an abusive message. → {strike, action 'warn'|'end', say_<language>: the fixed lines}."""
+    call = f"{ctx['pwa_uid']}:{ctx_iat}"
+    strike = ABUSE_MAX_STRIKES
+    for n in range(1, ABUSE_MAX_STRIKES + 1):
+        if store.once(f"abuse:{call}:{n}", days=1):
+            strike = n
+            break
+    end = strike >= ABUSE_MAX_STRIKES
+    lines = ABUSE_FINAL if end else ABUSE_WARNING
+    return {"strike": strike, "action": "end" if end else "warn",
+            **{f"say_{k}": v for k, v in lines.items()},
+            "then": ABUSE_PICK + (" Then call the end_call tool." if end else " Then wait for the caller.")}
