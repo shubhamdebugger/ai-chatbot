@@ -206,3 +206,13 @@ CREATE TABLE IF NOT EXISTS orch_voice_calls (        -- one row per voice call: 
   received_at DATETIME NOT NULL,
   KEY k_voice_user (user_id, started_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS orch_voice_live (        -- PWA voice calls in progress → CRM "On call" banner
+  el_conversation_id VARCHAR(64) PRIMARY KEY,      -- ElevenLabs conversation id
+  user_id VARCHAR(64) NOT NULL,                    -- CRM user id, or pwa:<uid> (same key as orch_voice_calls)
+  sb_conversation_id VARCHAR(64) NULL,
+  started_unix BIGINT NOT NULL,
+  expires_unix BIGINT NOT NULL,                    -- stops showing here if the browser never said "ended"
+  ended_unix BIGINT NULL,
+  KEY k_live_user (user_id, ended_unix)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

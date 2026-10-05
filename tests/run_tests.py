@@ -53,6 +53,19 @@ def test(fn):
     return fn
 
 
+def offline(fn):
+    """.env sets MYSQL_DB; voice code that reads/writes orch_* tables must not touch it in tests."""
+    def run():
+        old = os.environ.pop("MYSQL_DB", None)
+        try:
+            fn()
+        finally:
+            if old is not None:
+                os.environ["MYSQL_DB"] = old
+    run.__name__ = fn.__name__
+    return run
+
+
 def fresh_store():
     d = tempfile.mkdtemp()
     return FileStore(Path(d) / "memory.json")
@@ -390,6 +403,65 @@ def _voice_payload(ctx_secret, sbc="555", iat=1791008700, start=1791008705):
 
 
 @test
+def voice_call_end_kind_labelled():
+    from tanya.voice import end_kind
+    assert end_kind("end_call tool was called.", 570, 600) == "agent_end_call"
+    assert end_kind("Client disconnected: 1000", 86, 600) == "user_hangup"
+    assert end_kind("Client disconnected: 1000", 603, 600) == "time_limit_client"
+    assert end_kind("Maximum duration of 645 seconds exceeded", 645, 600) == "time_limit_server"
+    assert end_kind("", 30, 600) == "other"
+
+
+@test
+@offline
+def voice_time_limit_without_callback_flagged_for_agents():
+    from tanya.crm_adapter import ConsoleAdapter
+    from tanya.voice import handle_post_call
+    os.environ.update(TANYA_VOICE_CTX_SECRET="ctxsecret", ELEVENLABS_AGENT_ID="agent_test")
+    payload = _voice_payload("ctxsecret")
+    payload["data"]["conversation_id"] = "conv_time_limit"
+    payload["data"]["metadata"]["call_duration_secs"] = 92
+    payload["data"]["conversation_initiation_client_data"]["dynamic_variables"]["call_limit_secs"] = 90
+    s, crm = fresh_store(), ConsoleAdapter()
+    out = handle_post_call(payload, s, crm, NIGHT)
+    import json as _j
+    evs = [_j.loads(l) for l in s.events_path.read_text(encoding="utf-8").splitlines()]
+    call = [e for e in evs if e["type"] == "voice_call"][0]
+    assert call["ended_reason"] == "time_limit_client: Client disconnected: 1000", call["ended_reason"]
+    fu = [e for e in evs if e["type"] == "callback"]
+    assert out["followup"] and len(fu) == 1 and fu[0]["kind"] == "followup", fu   # never 'senior': nothing promised
+    assert fu[0]["slot"]["reason"] == "call_time_limit" and fu[0]["slot"]["sb_conversation_id"] == "555"
+
+
+@test
+@offline
+def voice_live_start_and_end_post_once_each():
+    from tanya.crm_adapter import ConsoleAdapter
+    from tanya.voice import handle_post_call
+    from tanya.voice_live import call_ended, call_started
+    os.environ.update(TANYA_VOICE_CTX_SECRET="ctxsecret", ELEVENLABS_AGENT_ID="agent_test")
+    s, crm = fresh_store(), ConsoleAdapter()
+    ctx = {"pwa_uid": "9001", "sb_user_id": "777", "sb_conversation_id": "555"}
+    payload = _voice_payload("ctxsecret")
+    sig = payload["data"]["conversation_initiation_client_data"]["dynamic_variables"]["ctx_sig"]
+    assert call_started(s, crm, ctx, sig, "conv_test1", NIGHT)["chat_message"]
+    assert call_started(s, crm, ctx, sig, "conv_test1", NIGHT)["duplicate"], "PWA retry → no second message"
+    assert call_ended(s, crm, ctx, sig, "conv_test1", NIGHT, duration_secs=372)["chat_message"]
+    out = handle_post_call(payload, s, crm, NIGHT)          # webhook after the PWA already said "ended"
+    assert out["stored"] and "chat_message" not in out, out
+    assert crm.outbox["555"] == ["📞 Voice call with Ms Tanya started",
+                                 "✅ Voice call with Ms Tanya completed · 6m 12s"], crm.outbox
+
+
+@test
+def voice_completed_message_says_what_was_promised():
+    from tanya.voice_live import done_text
+    assert done_text(372, "kal subah 10 baje ke baad") == (
+        "✅ Voice call with Ms Tanya completed · 6m 12s\n📞 Hamare senior aapko kal subah 10 baje ke baad call karenge.")
+    assert done_text(None, "") == "✅ Voice call with Ms Tanya completed"
+
+
+@test
 def voice_webhook_signature_checked():
     import hashlib
     import hmac as _h
@@ -404,24 +476,26 @@ def voice_webhook_signature_checked():
 
 
 @test
-def voice_call_stored_and_noted_for_agents_only():
+@offline
+def voice_call_stored_without_a_crm_note():
     from tanya.crm_adapter import ConsoleAdapter
     from tanya.voice import handle_post_call
     os.environ.update(TANYA_VOICE_CTX_SECRET="ctxsecret", ELEVENLABS_AGENT_ID="agent_test")
     s, crm = fresh_store(), ConsoleAdapter()
     out = handle_post_call(_voice_payload("ctxsecret"), s, crm, NIGHT)
-    assert out == {"ok": True, "stored": True, "agent_note": True}, out
+    assert out == {"ok": True, "stored": True, "chat_message": True}, out
     import json as _j
     ev = [_j.loads(l) for l in s.events_path.read_text(encoding="utf-8").splitlines()][-1]
     assert ev["type"] == "voice_call" and ev["user_id"] == "777" and ev["sb_conversation_id"] == "555"
     assert "9876543210" not in _j.dumps(ev), "phone number must be masked"
     assert ev["kb_queries"] and "stop loss" in ev["kb_queries"][0]
-    title, note = crm.notes["555"][0]
-    assert "Voice call" in note and "stop-loss" in note and not crm.outbox, "note only, no chat message"
+    assert ev["summary"] == "User asked about stop-loss." and not crm.notes, "summary in orch_voice_calls, no CRM note"
+    assert crm.outbox["555"] == ["✅ Voice call with Ms Tanya completed · 1m 26s"], "only the completed message"
     assert handle_post_call(_voice_payload("ctxsecret"), s, crm, NIGHT) == {"ok": True, "duplicate": True}
 
 
 @test
+@offline
 def voice_forged_or_stale_context_writes_nothing():
     from tanya.crm_adapter import ConsoleAdapter
     from tanya.voice import handle_post_call
@@ -436,6 +510,7 @@ def voice_forged_or_stale_context_writes_nothing():
 
 
 @test
+@offline
 def voice_call_teaches_facts_with_consent_only():
     from tanya.crm_adapter import ConsoleAdapter
     from tanya.voice import handle_post_call
@@ -499,6 +574,52 @@ def senior_callback_promises_only_working_hours():
 
 
 @test
+def senior_callback_respects_his_time_inside_team_hours_only():
+    from tanya.voice_context import hours_text, preferred_slot
+    at = lambda d, h, m=0: datetime(2026, 10, d, h, m, tzinfo=timeutil.IST)   # Oct 2026: 5 = Monday
+    now = at(5, 11, 39)
+    assert hours_text() == "Mon–Fri, 10 AM–7 PM"
+    assert preferred_slot(now, "", None) is None                                     # no time → old behaviour
+    ok, slot, due, say = preferred_slot(now, "today", 17)
+    assert ok and say == "aaj shaam 5 baje" and due == at(5, 18)
+    ok, slot, _, say = preferred_slot(now, "today", 23)                              # the 11 PM case
+    assert not ok and slot == at(6, 10) and say == "kal subah 10 baje"
+    ok, slot, _, say = preferred_slot(now, "tomorrow", 8)                            # before opening
+    assert not ok and slot == at(6, 10)
+    ok, _, _, say = preferred_slot(now, "", 10)                                      # 10 AM already gone → tomorrow
+    assert ok and say == "kal subah 10 baje"
+    ok, slot, _, say = preferred_slot(at(9, 12), "saturday", 11)                     # weekend → Monday
+    assert not ok and slot == at(12, 10) and say == "Monday subah 10 baje"
+    ok, _, _, _ = preferred_slot(now, "today", 12)                                   # 21 min away: too soon
+    assert not ok
+
+
+@test
+def senior_callback_outside_hours_offers_first_books_after_yes():
+    import json as _j
+    from tanya import voice_context as vc
+    from tanya.crm_adapter import ConsoleAdapter
+    s, crm = fresh_store(), ConsoleAdapter()
+    ctx = {"pwa_uid": "9001", "sb_user_id": "777", "sb_conversation_id": "555"}
+    now = datetime(2026, 10, 5, 11, 39, tzinfo=timeutil.IST)
+    real = vc.open_callbacks
+    try:
+        vc.open_callbacks = lambda c: []
+        out = vc.request_callback(s, crm, ctx, "support", "रात के 11:00 बजे", True, now,
+                                  preferred_day="today", preferred_hour=23)
+        assert not out["created"] and out["outside_hours"] and out["offer"] == "kal subah 10 baje"
+        assert "preferred_day='tomorrow'" in out["say"] and "preferred_hour=10" in out["say"]
+        assert not s.events_path.exists() and not crm.notes, "nothing booked before he agrees"
+        out = vc.request_callback(s, crm, ctx, "support", "रात के 11:00 बजे", True, now,
+                                  preferred_day="tomorrow", preferred_hour=10)
+        assert out["created"] and out["promised"] == "kal subah 10 baje"
+        ev = [_j.loads(l) for l in s.events_path.read_text(encoding="utf-8").splitlines()][-1]
+        assert ev["when_text"] == "kal subah 10 baje" and ev["slot"]["due_by"].startswith("2026-10-06T11:00")
+    finally:
+        vc.open_callbacks = real
+
+
+@test
 def senior_callback_needs_his_yes_and_is_booked_once():
     import json as _j
     from tanya import voice_context as vc
@@ -525,6 +646,7 @@ def senior_callback_needs_his_yes_and_is_booked_once():
 
 
 @test
+@offline
 def post_call_books_the_callback_the_agent_forgot():
     from tanya import voice_context as vc
     from tanya.crm_adapter import ConsoleAdapter

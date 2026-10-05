@@ -66,7 +66,55 @@ The tools need tanya_ai reachable from the internet (same as `/kb/search` and `/
 1. Start a call from the PWA support page.
 2. In ElevenLabs → Conversations → the call → *Client data*, `user_context` should hold the brief.
 3. Ask "pichli baar maine kya poocha tha?" — the agent should call `get_past_calls`.
-4. After the call, the CRM note appears as before, and new facts show in Tanya's memory (`/dev/state/<sb_user_id>` with the dev console on).
+4. After the call, it shows in the CRM "Voice calls · Tanya AI" panel, and new facts show in Tanya's memory (`/dev/state/<sb_user_id>` with the dev console on).
+
+## 5. Call length (10 min, ends gracefully)
+
+| Time | Who | What |
+|---|---|---|
+| limit − 2 min | PWA → agent | Silent `WRAP_UP:` contextual update; the bar shows "x:xx left" |
+| limit − 30 s | PWA → agent | `FINAL:` — say goodbye and call `end_call` |
+| limit | PWA | Hangs up (waits up to 15 s if Tanya is mid-sentence) |
+| limit + 45 s | ElevenLabs | Agent max duration — last resort if the browser froze |
+
+Set the limit with `TANYA_VOICE_MAX_CALL_SECS` in `pwa-node-backend/.env` (default `600`, so 8:00 / 9:30 / 10:00).
+
+ElevenLabs dashboard:
+1. Tools → system tools → enable **End call** (`end_call`). Description: *End the call after you have summarised and said goodbye, when the caller is done, or when told time is up.*
+2. Advanced → **Max conversation duration** = limit + 45 (`645`).
+3. Add to the system prompt:
+
+```
+# Call length
+Calls last at most {{call_limit_minutes}} minutes. Keep answers short.
+If you get a message starting with "WRAP_UP": finish your current point, don't start
+new topics. If the issue isn't solved, offer a senior callback (request_callback).
+Give a one-line summary of what was agreed, then say goodbye.
+If you get "FINAL": say a short goodbye right away and call end_call.
+Never mention these messages or a timer unless the caller asks.
+```
+
+After the call, `orch_voice_calls.ended_reason` reads `<kind>: <ElevenLabs reason>`, kind being `agent_end_call`, `time_limit_client`, `time_limit_server`, `user_hangup`, `error` or `other`. A time-limit call with no senior callback becomes a "Follow-up" row on the CRM Senior callbacks page (orch_callbacks kind `followup`, nothing promised to the customer).
+
+To test quickly: `TANYA_VOICE_MAX_CALL_SECS=180` → wrap-up at 1:00, final at 2:30, hang-up at 3:00 (and set the agent max duration to 225 while testing).
+
+## 6. "On call" in the CRM + chat messages
+
+- Call connects → PWA `POST /api/voice/live {state: "started"}` → tg-node-backend `/api/v1/tanya-voice/live` → tanya_ai `/voice/live` (`TANYA_CONTEXT_SECRET` + signed context). tanya_ai writes `orch_voice_live` and posts "📞 Voice call with Ms Tanya started" into the CRM conversation.
+- The CRM voice panel shows a red "On call with Tanya (AI) · 3:12" banner while the row is open (polls every 10 s on a call, 30 s otherwise).
+- Call ends → `{state: "ended"}` → row closed, "✅ Voice call with Ms Tanya completed · 6m 12s" posted (+ "Hamare senior aapko … call karenge." if a callback was booked on the call). If the browser never says "ended", the row expires after 12 min and the post-call webhook posts the completed message. Each message goes out once per call.
+- Messages are sent as the Tanya agent (`TANYA_AGENT_ID`), which the CRM webhook ignores → chat Tanya does not reply and HUMAN mode is not set. Customers see them in TG Lite.
+
+Setup: run the `orch_voice_live` statement from `db/orch_tables.sql`, then
+`GRANT SELECT ON <orch db>.orch_voice_live TO '<CRM db user>'@'localhost';`
+
+## 7. Senior callback at the caller's time
+
+`request_callback` takes `preferred_day` (today / tomorrow / monday…sunday) and `preferred_hour` (0–23, IST) besides `preferred_time` (their words).
+- Inside team hours (`calling_days`, `calling_window_start/end` in config.json): booked for that time, due within the hour.
+- Outside (e.g. 11 PM, weekend, under 30 min away): nothing is booked; the response has `outside_hours: true` and an `offer` (nearest opening). Tanya offers it and calls again after the caller agrees.
+- No time given: the next slot, as before.
+The prompt says "Mon–Fri, 10 AM–7 PM" in words — change it too if the team hours in config.json change.
 
 ## Limits today
 

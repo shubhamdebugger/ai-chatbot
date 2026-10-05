@@ -6,9 +6,12 @@ Plain English:
                  We answer the CRM in milliseconds; the thinking happens in the workers.
 - /events/app  : app events (app opened; later: plan bought, consent changed …) — input B2.
 - /kb/search   : knowledge search for the voice agent (ElevenLabs webhook tool). Needs KB_TOOL_SECRET.
-- /voice/post-call : ElevenLabs post-call webhook → orch_voice_calls + agent-only CRM note (voice.py).
+- /voice/post-call : ElevenLabs post-call webhook → orch_voice_calls (CRM voice panel) + Tanya memory (voice.py).
 - /voice/context : tg-node-backend, when it issues a call token → the caller brief {{user_context}}.
                    Needs TANYA_CONTEXT_SECRET (server to server only).
+- /voice/live  : tg-node-backend, when the PWA's call connects / ends → CRM "On call" banner and
+                   "Voice call started / completed" chat messages (voice_live.py). TANYA_CONTEXT_SECRET +
+                   the signed call context.
 - /voice/tools/... : ElevenLabs server tools during a call (recent chat, past calls, internal notes,
                    save fact, request callback). Need KB_TOOL_SECRET + the signed call context (voice_context.py).
 - /health      : for monitoring.
@@ -18,6 +21,7 @@ import hmac
 import json
 import time
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
@@ -35,6 +39,7 @@ from .settings import ROOT, S
 from . import timeutil
 from . import voice
 from . import voice_context
+from . import voice_live
 from .workers import TurnHandler, close_idle_sessions, seed_dev, seed_server_factory
 
 app = FastAPI(title="Ms Tanya — AI Gateway (Python reference)", version="1.0-frame")
@@ -113,6 +118,35 @@ def voice_caller_context(body: CallerContextQuery, x_context_secret: str = Heade
     return voice_context.build_context(store, body.model_dump(), body.app, timeutil.now())
 
 
+class LiveCall(BaseModel):
+    """The PWA's call connected / ended, with the signed call context from the token."""
+    state: Literal["started", "ended"]
+    el_conversation_id: str = Field(default="", pattern=r"^[A-Za-z0-9_-]{0,64}$")
+    duration_secs: int | None = Field(default=None, ge=0, le=7200)
+    pwa_uid: str = ""
+    sb_user_id: str = ""
+    sb_conversation_id: str = ""
+    ctx_iat: str = ""
+    ctx_sig: str = ""
+
+
+@app.post("/voice/live")
+def voice_live_status(body: LiveCall, x_context_secret: str = Header("")):
+    """Call started / ended. Called by tg-node-backend only (the browser goes through it)."""
+    secret = S.env("TANYA_CONTEXT_SECRET")
+    if not secret or not hmac.compare_digest(x_context_secret, secret):
+        raise HTTPException(401, "invalid context secret")
+    ctx = voice.verify_context(body.model_dump(), int(time.time()), S.env("TANYA_VOICE_CTX_SECRET"),
+                               max_age=voice.TOOL_CTX_MAX_AGE_SECS)
+    if not ctx:
+        raise HTTPException(403, "invalid call context")
+    now = timeutil.now()
+    if body.state == "started":
+        return voice_live.call_started(store, adapter, ctx, body.ctx_sig, body.el_conversation_id, now)
+    return voice_live.call_ended(store, adapter, ctx, body.ctx_sig, body.el_conversation_id, now,
+                                 duration_secs=body.duration_secs)
+
+
 class ToolCall(BaseModel):
     """Every voice tool gets the signed call context from the dynamic variables (set as
     'dynamic variable' parameters in ElevenLabs, so the AI cannot choose whose data it reads)."""
@@ -127,6 +161,8 @@ class ToolCall(BaseModel):
     his_words: str = Field(default="", max_length=500)
     reason: str = Field(default="", max_length=40)
     preferred_time: str = Field(default="", max_length=200)
+    preferred_day: str = Field(default="", max_length=20)          # today | tomorrow | monday … sunday
+    preferred_hour: int | None = Field(default=None, ge=0, le=23)  # 24h, IST
     confirmed: bool = False
 
 
@@ -160,7 +196,8 @@ def voice_tool_internal_notes(body: ToolCall, x_tool_secret: str = Header("")):
 def voice_tool_request_callback(body: ToolCall, x_tool_secret: str = Header("")):
     """'Our senior will call you' — only after the caller said yes."""
     return voice_context.request_callback(store, adapter, _tool_ctx(body, x_tool_secret), body.reason,
-                                          body.preferred_time, body.confirmed, timeutil.now())
+                                          body.preferred_time, body.confirmed, timeutil.now(),
+                                          preferred_day=body.preferred_day, preferred_hour=body.preferred_hour)
 
 
 @app.post("/voice/tools/save-fact")

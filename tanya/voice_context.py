@@ -327,6 +327,86 @@ def callback_window(now):
     return opening.replace(hour=eh, minute=em), f"{when} ke baad"
 
 
+PREFERRED_DAYS = ("today", "tomorrow", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+MIN_NOTICE_MINS = 30             # a time sooner than this is too close to promise
+
+
+def _window():
+    from .timeutil import hm
+    return (hm(S.get("calling_window_start", "10:00")), hm(S.get("calling_window_end", "19:00")),
+            set(S.get("calling_days", DAYS[:5])))
+
+
+def hours_text() -> str:
+    """'Mon–Fri, 10 AM–7 PM' from config, for Tanya to tell the caller."""
+    (sh, sm), (eh, em), days = _window()
+    on = [d for d in DAYS if d in days]
+    span = f"{on[0]}–{on[-1]}" if on == DAYS[DAYS.index(on[0]):DAYS.index(on[-1]) + 1] else ", ".join(on)
+    t = lambda h, m: f"{h % 12 or 12}{f':{m:02d}' if m else ''} {'AM' if h < 12 else 'PM'}"
+    return f"{span}, {t(sh, sm)}–{t(eh, em)}"
+
+
+def _when(dt, now) -> str:
+    """'aaj shaam 5 baje' / 'kal subah 10 baje' / 'Monday subah 10 baje'."""
+    from datetime import timedelta
+    from .handoff import phrase_at
+    when = phrase_at(dt, now, "hinglish")
+    if dt.date() - now.date() > timedelta(days=1):
+        when = dt.strftime("%A") + " " + when.split(" ", 2)[-1]
+    return when
+
+
+def _day_word(dt, now) -> str:
+    """The preferred_day value that points at dt (for Tanya's second call after the caller agrees)."""
+    from datetime import timedelta
+    if dt.date() == now.date():
+        return "today"
+    if dt.date() == (now + timedelta(days=1)).date():
+        return "tomorrow"
+    return dt.strftime("%A").lower()
+
+
+def preferred_slot(now, day, hour):
+    """The caller's own time ('today'/'tomorrow'/a weekday + hour 0–23) checked against team hours.
+    None if he gave no hour. Else (ok, at, due_by, phrase):
+      ok True  → inside team hours: promise that time (due within the hour).
+      ok False → outside (night, holiday, too soon): 'at' is the nearest slot to OFFER him instead."""
+    from datetime import timedelta
+    try:
+        hour = int(hour)
+    except (TypeError, ValueError):
+        return None
+    if not 0 <= hour <= 23:
+        return None
+    (sh, sm), (eh, em), days = _window()
+    day = str(day or "").strip().lower()
+    base = now.replace(minute=0, second=0, microsecond=0)
+    if day == "tomorrow":
+        target = base.replace(hour=hour) + timedelta(days=1)
+    elif day in PREFERRED_DAYS[2:]:
+        ahead = (PREFERRED_DAYS.index(day) - 2 - now.weekday()) % 7
+        target = base.replace(hour=hour) + timedelta(days=ahead)
+        if target < now + timedelta(minutes=MIN_NOTICE_MINS):
+            target += timedelta(days=7)                  # 'Monday' said on Monday evening → next Monday
+    else:
+        target = base.replace(hour=hour)
+        if not day and target < now + timedelta(minutes=MIN_NOTICE_MINS):
+            target += timedelta(days=1)                  # '5 baje' said at 6 PM → tomorrow 5
+    opening = target.replace(hour=sh, minute=sm)
+    close = target.replace(hour=eh, minute=em)
+    if (DAYS[target.weekday()] in days and opening <= target < close
+            and target >= now + timedelta(minutes=MIN_NOTICE_MINS)):
+        return True, target, min(target + timedelta(hours=1), close), _when(target, now)
+    # Outside team hours → the next opening at or after what he asked for (never in the past).
+    start = max(target, now)
+    slot = start.replace(hour=sh, minute=sm, second=0, microsecond=0)
+    if slot < start:
+        slot += timedelta(days=1)
+    while DAYS[slot.weekday()] not in days:
+        slot += timedelta(days=1)
+    return False, slot, slot.replace(hour=eh, minute=em), _when(slot, now)
+
+
 def open_callbacks(ctx) -> list:
     """His pending senior callbacks (requested / booked), newest first. [] without MySQL."""
     if not S.env("MYSQL_DB"):
@@ -357,8 +437,11 @@ def _callback_lines(ctx) -> list:
             "Do not promise again; say the request is with the team." for c in open_callbacks(ctx)]
 
 
-def request_callback(store, adapter, ctx, reason, preferred_time, confirmed, now, source="tool") -> dict:
-    """Book 'our senior will call you'. Only with his explicit yes; one open request per caller."""
+def request_callback(store, adapter, ctx, reason, preferred_time, confirmed, now, source="tool",
+                     preferred_day="", preferred_hour=None) -> dict:
+    """Book 'our senior will call you'. Only with his explicit yes; one open request per caller.
+    With his own time (preferred_day + preferred_hour): booked for that time if it is inside team hours;
+    otherwise nothing is booked and Tanya offers the nearest slot first (he must agree to it)."""
     if not confirmed:
         return {"created": False, "say": "First ask: 'Kya aap chahenge ki hamare senior aapko call karein?' "
                                          "Call this tool only after a clear yes."}
@@ -367,7 +450,18 @@ def request_callback(store, adapter, ctx, reason, preferred_time, confirmed, now
     if existing:
         return {"created": False, "already_requested": True, "promised": existing[0]["promised"],
                 "say": f"Their request is already with the team; a senior will call {existing[0]['promised']}."}
-    due_by, phrase = callback_window(now)
+    mine = preferred_slot(now, preferred_day, preferred_hour)
+    if mine and not mine[0]:
+        _, slot, _, offer = mine
+        return {"created": False, "outside_hours": True, "offer": offer,
+                "say": f"Our seniors call only {hours_text()}, so that time is not possible. Tell the caller this "
+                       f"politely and offer '{offer}'. Ask if that works. If they agree, call request_callback again "
+                       f"with preferred_day='{_day_word(slot, now)}' and preferred_hour={slot.hour}. "
+                       "If they want another time, call again with that time. Do not promise anything yet."}
+    if mine:
+        _, _, due_by, phrase = mine
+    else:
+        due_by, phrase = callback_window(now)
     key = _user_key(ctx)
     pref = _m(preferred_time, 120)
     cb = {"type": "callback", "user_id": key, "at": iso(now), "id": f"CB-V-{key}-{now.strftime('%Y%m%d%H%M%S')}",

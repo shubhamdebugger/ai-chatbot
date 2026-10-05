@@ -1,4 +1,4 @@
-"""Voice calls with Ms Tanya (ElevenLabs agent, PWA support page) → our records + a note for agents.
+"""Voice calls with Ms Tanya (ElevenLabs agent, PWA support page) → our records (CRM voice panel) + Tanya memory.
 
 Plain English:
 1. The PWA asks tg-node-backend for a call token. tg-node-backend signs the call context
@@ -8,9 +8,10 @@ Plain English:
    ELEVENLABS_WEBHOOK_SECRET). We check both signatures, so a caller can never get a note
    written into someone else's CRM conversation.
 3. The call (masked) goes to orch_voice_calls through the normal persister, a short session
-   note goes into Tanya's memory, and a note for AGENTS ONLY goes on the CRM conversation.
-   Nothing is posted as a chat message, so the customer sees nothing and the CRM webhook loop
-   (which would wake chat Tanya or set HUMAN mode) is never triggered.
+   note goes into Tanya's memory. Agents read the call (summary, transcript) in the CRM's
+   "Voice calls · Tanya AI" panel, which reads orch_voice_calls — no CRM note is written.
+   The only chat messages are "Voice call started / completed" (voice_live.py), posted as the Tanya
+   agent account: the CRM webhook ignores those, so chat Tanya never wakes and HUMAN mode is never set.
 """
 import hashlib
 import hmac
@@ -63,10 +64,39 @@ def verify_context(dyn: dict, start_ts, secret: str, max_age=CTX_MAX_AGE_SECS):
     return {"pwa_uid": uid, "sb_user_id": sbu, "sb_conversation_id": sbc}
 
 
+DEFAULT_CALL_LIMIT_SECS = 600   # same default as TANYA_VOICE_MAX_CALL_SECS in tg-node-backend
+TIME_LIMIT_SLACK_SECS = 5       # the browser hangs up at the limit (+ up to 15s while Tanya finishes)
+
+
+def end_kind(termination_reason, duration_secs, limit_secs) -> str:
+    """How the call ended, from ElevenLabs' free-text termination_reason:
+    agent_end_call (Tanya closed it), time_limit_client (the PWA hung up at the limit),
+    time_limit_server (the agent's max duration cut it), user_hangup, error, or other."""
+    r = str(termination_reason or "").lower()
+    if "end_call" in r or "end call" in r:
+        return "agent_end_call"
+    if "max" in r and "duration" in r:
+        return "time_limit_server"
+    if "client disconnected" in r or "user" in r:
+        if limit_secs and int(duration_secs or 0) >= int(limit_secs) - TIME_LIMIT_SLACK_SECS:
+            return "time_limit_client"
+        return "user_hangup"
+    if "error" in r or "fail" in r:
+        return "error"
+    return "other"
+
+
+def _call_limit(dyn: dict) -> int:
+    try:
+        return int(dyn.get("call_limit_secs") or 0) or DEFAULT_CALL_LIMIT_SECS
+    except (TypeError, ValueError):
+        return DEFAULT_CALL_LIMIT_SECS
+
+
 def build_event(data: dict, ctx: dict, now) -> dict:
     """One 'voice_call' event for the persister (orch_voice_calls). Transcript is masked."""
     md, an = data.get("metadata") or {}, data.get("analysis") or {}
-    lines, masked, kb_queries = [], set(), []
+    lines, masked, kb_queries, callback_asked = [], set(), [], False
     for turn in data.get("transcript") or []:
         text, kinds = mask((turn.get("message") or "").strip())
         masked.update(kinds)
@@ -74,11 +104,15 @@ def build_event(data: dict, ctx: dict, now) -> dict:
         for c in turn.get("tool_calls") or []:
             if c.get("tool_name") == "search_knowledge":
                 kb_queries.append(mask(c.get("params_as_json") or "")[0][:200])
+            elif c.get("tool_name") == "request_callback":
+                callback_asked = True
         if text or tools:
             lines.append({"role": turn.get("role"), "at_secs": turn.get("time_in_call_secs"), "text": text,
                           **({"tools": tools} if tools else {})})
     start = md.get("start_time_unix_secs")
     summary = mask(an.get("transcript_summary") or "")[0]
+    dyn = (data.get("conversation_initiation_client_data") or {}).get("dynamic_variables") or {}
+    kind = end_kind(md.get("termination_reason"), md.get("call_duration_secs"), _call_limit(dyn))
     return {
         "type": "voice_call",
         "user_id": ctx["sb_user_id"] or f"pwa:{ctx['pwa_uid']}",
@@ -89,7 +123,10 @@ def build_event(data: dict, ctx: dict, now) -> dict:
         "started_at": iso(datetime.fromtimestamp(start, IST)) if start else None,
         "duration_secs": md.get("call_duration_secs"),
         "status": data.get("status"),
-        "ended_reason": md.get("termination_reason"),
+        "end_kind": kind,
+        # orch_voice_calls.ended_reason: "<end_kind>: <ElevenLabs' own words>"
+        "ended_reason": f"{kind}: {md.get('termination_reason') or ''}".rstrip(": "),
+        "callback_asked": callback_asked,
         "call_successful": an.get("call_successful"),
         "title": an.get("call_summary_title"),
         "summary": summary,
@@ -99,20 +136,6 @@ def build_event(data: dict, ctx: dict, now) -> dict:
         "cost": md.get("cost"),
         "at": iso(now),
     }
-
-
-def agent_note(ev: dict) -> str:
-    """The note agents see on the CRM conversation (never shown to the customer)."""
-    secs = int(ev.get("duration_secs") or 0)
-    when = datetime.fromisoformat(ev["started_at"]).strftime("%d %b %Y, %H:%M IST") if ev.get("started_at") else ""
-    out = [f"🎙️ Voice call with Ms Tanya (AI) — {when} · {secs // 60}m {secs % 60:02d}s",
-           f"Summary: {ev.get('summary') or '(no summary)'}"]
-    if ev.get("kb_queries"):
-        out.append("Knowledge searched: " + "; ".join(ev["kb_queries"][:6]))
-    if ev.get("ended_reason"):
-        out.append(f"Ended: {ev['ended_reason']}")
-    out.append(f"Full transcript: orch_voice_calls · {ev.get('el_conversation_id')}")
-    return "\n".join(out)
 
 
 FACTS_SYSTEM = """TASK: VOICE FACTS
@@ -194,6 +217,24 @@ def _senior_callback_safety_net(data, ctx, store, adapter, now) -> str:
     return "created" if out.get("created") else "already"
 
 
+def _time_limit_followup(ev, ctx, store, now) -> bool:
+    """The call was cut by the time limit and no senior callback was booked → a 'followup' item on the
+    Senior callbacks page, so an agent checks in instead of the note waiting to be found. Kind 'followup',
+    not 'senior': the customer was promised nothing, and Tanya only treats 'senior' as already promised."""
+    if not ev["end_kind"].startswith("time_limit") or ev["callback_asked"]:
+        return False
+    from .voice_context import _user_key, callback_window
+    due_by, _ = callback_window(now)
+    key = _user_key(ctx)
+    store.emit([{"type": "callback", "user_id": key, "at": iso(now),
+                 "id": f"CB-V-{key}-{now.strftime('%Y%m%d%H%M%S')}-F", "kind": "followup", "state": "requested",
+                 "requested_at": iso(now), "when_text": "Nothing promised: call hit the time limit",
+                 "slot": {"reason": "call_time_limit", "preferred_time": "", "due_by": iso(due_by),
+                          "source": "post_call", "el_conversation_id": ev["el_conversation_id"],
+                          "sb_conversation_id": ctx.get("sb_conversation_id") or ""}}])
+    return True
+
+
 def handle_post_call(payload: dict, store, adapter, now, llm=None) -> dict:
     """Process one verified ElevenLabs webhook. Always returns a small status dict (never raises
     for bad input: ElevenLabs disables a webhook that keeps failing). With llm, the facts he
@@ -216,19 +257,15 @@ def handle_post_call(payload: dict, store, adapter, now, llm=None) -> dict:
     store.emit([ev])
     learned = _remember(store, ev["user_id"], ev, call_facts(llm, ev), now)
     callback = _senior_callback_safety_net(data, ctx, store, adapter, now)
-
-    noted = False
-    if ctx["sb_conversation_id"]:
-        try:
-            adapter.add_agent_note(ctx["sb_user_id"], ctx["sb_conversation_id"],
-                                   "Ms Tanya — Voice call (auto)", agent_note(ev))
-            noted = True
-        except Exception as e:  # the record is safe in orch_voice_calls; flag it for a person
-            store.emit([{"type": "alert", "user_id": ev["user_id"], "kind": "voice_note_failed",
-                         "el_conversation_id": ev["el_conversation_id"],
-                         "error": f"{type(e).__name__}: {str(e)[:200]}", "at": ev["at"]}])
-    return {"ok": True, "stored": True, "agent_note": noted, **({"facts": learned} if llm else {}),
-            **({"senior_callback": callback} if callback else {})}
+    ev["callback_asked"] = ev["callback_asked"] or bool(callback)
+    ev["followup"] = _time_limit_followup(ev, ctx, store, now)
+    # "Voice call completed" in the chat, if the PWA didn't already post it (browser died, old app).
+    from .voice_live import call_ended
+    chat = call_ended(store, adapter, ctx, dyn.get("ctx_sig"), data.get("conversation_id"), now,
+                      duration_secs=ev.get("duration_secs"), started_unix=start)
+    return {"ok": True, "stored": True, **({"facts": learned} if llm else {}),
+            **({"senior_callback": callback} if callback else {}), **({"followup": True} if ev["followup"] else {}),
+            **({"chat_message": True} if chat.get("chat_message") else {})}
 
 
 def fetch_conversation(conversation_id: str) -> dict:
