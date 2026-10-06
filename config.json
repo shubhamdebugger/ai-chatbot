@@ -150,6 +150,59 @@
     "owner": "Claude - v4 design; Open to change",
     "note": "HUMAN mode ends by itself after this many hours without staff activity"
   },
+  "staff_silent_alert_minutes": {
+    "value": 5,
+    "owner": "v4 §7.6",
+    "note": "Customer waiting for staff (HUMAN) this long without a staff reply -> alert (orch_alerts kind staff_silent)"
+  },
+  "business_hours_start": {
+    "value": "07:00",
+    "owner": "Tushar 06-Oct-2026",
+    "note": "Handoff recovery + callback SLA: business hours start (IST)"
+  },
+  "business_hours_end": {
+    "value": "19:00",
+    "owner": "Tushar 06-Oct-2026",
+    "note": "Handoff recovery + callback SLA: business hours end (IST)"
+  },
+  "handoff_human_actions": {
+    "value": [
+      "HAND_OVER_PERSON",
+      "LOG_GRIEVANCE"
+    ],
+    "owner": "Claude - open to change",
+    "note": "Tanya's decisions that hand the chat to staff (HUMAN mode + recovery timer). Purchase / call booking only create a callback."
+  },
+  "handoff_recovery_day_minutes": {
+    "value": 10,
+    "owner": "Tushar 06-Oct-2026",
+    "note": "Business hours: no agent REPLY within this -> Tanya resumes (assignment alone does not count)"
+  },
+  "handoff_recovery_night_hours": {
+    "value": 12,
+    "owner": "Tushar 06-Oct-2026",
+    "note": "Outside business hours: no agent reply within this -> Tanya resumes"
+  },
+  "callback_sla_minutes": {
+    "value": 10,
+    "owner": "Tushar 06-Oct-2026",
+    "note": "Business hours: callback overdue after this; outside business hours due next business day start + this"
+  },
+  "summary_every_messages": {
+    "value": 5,
+    "owner": "Claude",
+    "note": "Conversation summary rebuilt after this many new messages"
+  },
+  "summary_max_age_minutes": {
+    "value": 10,
+    "owner": "Claude",
+    "note": "...or when the oldest unsummarised message is this old"
+  },
+  "typing_ttl_seconds": {
+    "value": 90,
+    "owner": "Claude",
+    "note": "Typing state expires by itself (worker crash never leaves typing on)"
+  },
   "greeting_min_gap_hours": {
     "value": 3,
     "owner": "Claude",
@@ -169,6 +222,21 @@
     "value": 60,
     "owner": "Claude - v4 design",
     "note": "A job not acknowledged for this long is picked up again"
+  },
+  "summary_max_words": {
+    "value": 40,
+    "owner": "Tushar - 06-Oct-2026",
+    "note": "Conversation Summary note: Hinglish, at most this many words"
+  },
+  "crm_lead_brief_note": {
+    "value": false,
+    "owner": "Tushar - 06-Oct-2026",
+    "note": "Write the 'Ms Tanya - Lead Brief (auto)' note to the CRM. Off: the CRM notes show only the Conversation Summary; the brief is still stored in MySQL"
+  },
+  "llm_hedge_after_seconds": {
+    "value": {"understand": 4.0, "reply": 5.0, "check": 4.5},
+    "owner": "Claude - Feature 6, 06-Oct-2026",
+    "note": "A slow AI answer gets one duplicate request after this many seconds; the first answer is used. LLM_HEDGE=0 turns it off"
   },
   "models": {
     "owner": "Tushar - your key; Claude - model choice",

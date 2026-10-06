@@ -56,9 +56,10 @@ class Intake:
 class StreamWorker:
     """Consumer side. partitions = the lanes this process owns (one owner per lane keeps order)."""
 
-    def __init__(self, r, partitions, handler, consumer=None, group=GROUP, streams=None):
+    def __init__(self, r, partitions, handler, consumer=None, group=GROUP, streams=None, on_dead=None):
         self.r = r
         self.handler = handler
+        self.on_dead = on_dead                          # called with (stream, id, fields) when a job is dead-lettered
         self.group = group
         self.consumer = consumer or f"{socket.gethostname()}-{partitions[0] if partitions else 0}"
         self.streams = streams or [stream_name(p) for p in partitions]
@@ -136,6 +137,11 @@ class StreamWorker:
                         pass
                     print(f"[stream] DEAD LETTER {s} {p['message_id']} after {p['times_delivered']} attempts",
                           file=sys.stderr, flush=True)
+                    if self.on_dead:
+                        try:
+                            self.on_dead(s, p["message_id"], body)
+                        except Exception as e:      # the dead letter itself is already safe in tanya:dead
+                            print(f"[stream] on_dead failed {type(e).__name__}: {str(e)[:120]}", file=sys.stderr, flush=True)
                     continue
                 claimed = self.r.xclaim(s, self.group, self.consumer, self.idle_ms, [p["message_id"]])
                 for msg_id, fields in claimed:

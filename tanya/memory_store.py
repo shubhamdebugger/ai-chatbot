@@ -16,6 +16,8 @@ Redis keys (production):
   tanya:persist              stream of events for the MySQL persister
   tanya:killswitch           off | limited | stopped   (AI-C20)
   tanya:human:{conv_id}      HUMAN mode flag, set at once by the webhook receiver (expires by itself)
+  tanya:release:{conv_id}    time staff released the chat to Tanya (chat closed / #bot)
+  tanya:staff_wait           zset conversation -> time a customer started waiting for staff (staff-silent alert)
   tanya:loadq                list of user IDs whose picture the loader must fill (cold start)
   tanya:in:{0..7}            intake streams, partitioned per customer (streams.py)
   tanya:seen:{event_id}      duplicate guard for webhook events (streams.py)
@@ -117,6 +119,103 @@ class FileStore:
         until = self.db.get("human", {}).get(conversation_id)
         return bool(until) and datetime.fromisoformat(until) > now
 
+    # HUMAN -> BOT: staff closed the chat or typed #bot (v4 §7). The record's HUMAN mode older than this ends.
+    def release_conversation(self, conversation_id, now):
+        with self.lock:
+            self.db.setdefault("human", {}).pop(conversation_id, None)
+            self.db.setdefault("released", {})[conversation_id] = now.isoformat()
+            self.db.setdefault("staff_wait", {}).pop(conversation_id, None)
+            h = self.db.setdefault("handoffs", {}).get(conversation_id)
+            if h and h.get("status") == "open":
+                h["status"] = "released"
+            self._flush()
+
+    def release_time(self, conversation_id):
+        from datetime import datetime
+        t = self.db.get("released", {}).get(conversation_id)
+        return datetime.fromisoformat(t) if t else None
+
+    # Customer waiting for staff (HUMAN mode, no staff reply yet) -> staff-silent alert after N minutes (v4 §7.6)
+    def staff_wait_start(self, conversation_id, user_id, now):
+        with self.lock:
+            self.db.setdefault("staff_wait", {}).setdefault(conversation_id, [now.timestamp(), user_id])
+            self._flush()
+
+    def staff_wait_end(self, conversation_id):
+        with self.lock:
+            self.db.setdefault("staff_wait", {}).pop(conversation_id, None)
+            self._flush()
+
+    def staff_waiting_since(self, before_epoch):
+        return [(c, u, t) for c, (t, u) in self.db.get("staff_wait", {}).items() if t <= before_epoch]
+
+    # ---- Tanya's own handoff (06-Oct-2026): HUMAN mode with a recovery deadline (handoff_recovery.py)
+    def handoff_start(self, conversation_id, data, due_epoch):
+        with self.lock:
+            self.db.setdefault("handoffs", {})[conversation_id] = dict(data, due=due_epoch)
+            self._flush()
+
+    def handoff_get(self, conversation_id):
+        return self.db.get("handoffs", {}).get(conversation_id)
+
+    def handoff_update(self, conversation_id, **fields):
+        with self.lock:
+            h = self.db.setdefault("handoffs", {}).get(conversation_id)
+            if h is not None:
+                h.update(fields)
+                self._flush()
+
+    def handoff_due(self, before_epoch):
+        return [c for c, h in self.db.get("handoffs", {}).items()
+                if h.get("status") == "open" and h.get("due", 0) <= before_epoch]
+
+    def handoff_end(self, conversation_id, status):
+        self.handoff_update(conversation_id, status=status)
+
+    # ---- typing / queued state the PWA reads (never left on: expires by itself)
+    def typing_set(self, conversation_id, state, ttl):
+        import time as _t
+        with self.lock:
+            self.db.setdefault("typing", {})[conversation_id] = [state, _t.time() + ttl]
+            self._flush()
+
+    def typing_clear(self, conversation_id):
+        with self.lock:
+            self.db.setdefault("typing", {}).pop(conversation_id, None)
+            self._flush()
+
+    def typing_get(self, conversation_id):
+        import time as _t
+        v = self.db.get("typing", {}).get(conversation_id)
+        return v[0] if v and v[1] > _t.time() else None
+
+    # ---- conversation summary bookkeeping (summaries.py)
+    def summary_touch(self, conversation_id, user_id, now_epoch, force=False):
+        with self.lock:
+            d = self.db.setdefault("summary", {}).setdefault(conversation_id, {"count": 0, "first": now_epoch,
+                                                                                 "user_id": user_id, "force": 0})
+            d["count"] += 1
+            d["user_id"] = user_id or d.get("user_id")
+            d["first"] = d.get("first") or now_epoch
+            if force:
+                d["force"] = 1
+            self._flush()
+
+    def summary_dirty(self):
+        return {c: dict(d) for c, d in self.db.get("summary", {}).items() if d.get("count", 0) or d.get("force")}
+
+    def summary_clear(self, conversation_id):
+        with self.lock:
+            self.db.setdefault("summary", {}).pop(conversation_id, None)
+            self._flush()
+
+    def summary_backoff(self, conversation_id, until_epoch):
+        with self.lock:
+            d = self.db.setdefault("summary", {}).get(conversation_id)
+            if d is not None:
+                d["retry_after"] = until_epoch
+                self._flush()
+
 
 class RedisStore:
     """Production memory. Needs REDIS_URL in .env (e.g. redis://localhost:6379/0), AOF on."""
@@ -198,6 +297,117 @@ class RedisStore:
 
     def human_flag(self, conversation_id, now) -> bool:
         return bool(self.r.exists(f"tanya:human:{conversation_id}"))
+
+    # HUMAN -> BOT: staff closed the chat or typed #bot (v4 §7). The record's HUMAN mode older than this ends.
+    def release_conversation(self, conversation_id, now):
+        p = self.r.pipeline()
+        p.delete(f"tanya:human:{conversation_id}")
+        p.set(f"tanya:release:{conversation_id}", now.isoformat(), ex=30 * 86400)
+        p.zrem("tanya:staff_wait", conversation_id)
+        p.zrem("tanya:handoff_due", conversation_id)        # a Tanya handoff ends with the release
+        p.execute()
+
+    def release_time(self, conversation_id):
+        from datetime import datetime
+        t = self.r.get(f"tanya:release:{conversation_id}")
+        return datetime.fromisoformat(t) if t else None
+
+    # Customer waiting for staff (HUMAN mode, no staff reply yet) -> staff-silent alert after N minutes (v4 §7.6)
+    def staff_wait_start(self, conversation_id, user_id, now):
+        p = self.r.pipeline()
+        p.zadd("tanya:staff_wait", {conversation_id: now.timestamp()}, nx=True)
+        p.hset("tanya:staff_wait_user", conversation_id, user_id)
+        p.execute()
+
+    def staff_wait_end(self, conversation_id):
+        self.r.zrem("tanya:staff_wait", conversation_id)
+
+    def staff_waiting_since(self, before_epoch):
+        out = []
+        for c, t in self.r.zrangebyscore("tanya:staff_wait", 0, before_epoch, withscores=True):
+            out.append((c, self.r.hget("tanya:staff_wait_user", c) or "", t))
+        return out
+
+    # ---- Tanya's own handoff (06-Oct-2026): HUMAN mode with a recovery deadline (handoff_recovery.py)
+    #   tanya:handoff:{conv}  hash (handoff_id, user_id, action, reason, period, started_at, due_at, status, ...)
+    #   tanya:handoff_due     zset conv -> due epoch (only open handoffs)
+    def handoff_start(self, conversation_id, data, due_epoch):
+        import json as _j
+        p = self.r.pipeline()
+        p.delete(f"tanya:handoff:{conversation_id}")
+        p.hset(f"tanya:handoff:{conversation_id}", mapping={k: _j.dumps(v) if isinstance(v, (dict, list)) else str(v)
+                                                            for k, v in dict(data, due=due_epoch).items()})
+        p.expire(f"tanya:handoff:{conversation_id}", 14 * 86400)
+        p.zadd("tanya:handoff_due", {conversation_id: due_epoch})
+        p.execute()
+
+    def handoff_get(self, conversation_id):
+        h = self.r.hgetall(f"tanya:handoff:{conversation_id}")
+        if not h:
+            return None
+        h["due"] = float(h.get("due", 0))
+        return h
+
+    def handoff_update(self, conversation_id, **fields):
+        if self.r.exists(f"tanya:handoff:{conversation_id}"):
+            self.r.hset(f"tanya:handoff:{conversation_id}", mapping={k: str(v) for k, v in fields.items()})
+
+    def handoff_due(self, before_epoch):
+        return list(self.r.zrangebyscore("tanya:handoff_due", 0, before_epoch))
+
+    def handoff_end(self, conversation_id, status):
+        p = self.r.pipeline()
+        p.zrem("tanya:handoff_due", conversation_id)
+        p.execute()
+        self.handoff_update(conversation_id, status=status)
+
+    # ---- typing / queued state the PWA reads (never left on: expires by itself)
+    def typing_set(self, conversation_id, state, ttl):
+        self.r.set(f"tanya:typing:{conversation_id}", state, ex=int(ttl))
+
+    def typing_clear(self, conversation_id):
+        self.r.delete(f"tanya:typing:{conversation_id}")
+
+    def typing_get(self, conversation_id):
+        return self.r.get(f"tanya:typing:{conversation_id}")
+
+    # ---- conversation summary bookkeeping (summaries.py)
+    #   tanya:summary_dirty  hash conv -> json {count, first, user_id, force, retry_after}
+    def summary_touch(self, conversation_id, user_id, now_epoch, force=False):
+        import json as _j
+        for _ in range(5):
+            with self.r.pipeline() as p:
+                try:
+                    p.watch("tanya:summary_dirty")
+                    raw = p.hget("tanya:summary_dirty", conversation_id)
+                    d = _j.loads(raw) if raw else {"count": 0, "first": now_epoch, "force": 0}
+                    d["count"] = d.get("count", 0) + 1
+                    d["user_id"] = user_id or d.get("user_id")
+                    d["first"] = d.get("first") or now_epoch
+                    if force:
+                        d["force"] = 1
+                    p.multi()
+                    p.hset("tanya:summary_dirty", conversation_id, _j.dumps(d))
+                    p.execute()
+                    return
+                except Exception as e:
+                    if "Watch" not in type(e).__name__:
+                        raise
+
+    def summary_dirty(self):
+        import json as _j
+        return {c: _j.loads(v) for c, v in self.r.hgetall("tanya:summary_dirty").items()}
+
+    def summary_clear(self, conversation_id):
+        self.r.hdel("tanya:summary_dirty", conversation_id)
+
+    def summary_backoff(self, conversation_id, until_epoch):
+        import json as _j
+        raw = self.r.hget("tanya:summary_dirty", conversation_id)
+        if raw:
+            d = _j.loads(raw)
+            d["retry_after"] = until_epoch
+            self.r.hset("tanya:summary_dirty", conversation_id, _j.dumps(d))
 
 
 def make_store():

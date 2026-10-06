@@ -121,8 +121,26 @@ def _webhook(payload, headers):
     ev = adapter.parse_webhook(payload, headers)
     if ev is None:
         return 200, {"ok": False, "ignored": True}, None
+    if ev.kind == "invalid_event":                                   # G5: no numeric message id — never guessed
+        store.emit([{"type": "alert", "user_id": ev.user_id or "-", "at": timeutil.iso(timeutil.now()),
+                     "kind": "webhook_without_message_id", "conversation_id": ev.conversation_id}])
+        return 200, {"ok": False, "rejected": "missing message_id"}, ev
+    if ev.kind in ("conversation_closed", "release_to_bot"):         # HUMAN -> BOT (v4 §7): chat closed / #bot
+        from .handoff_recovery import released_by_staff
+        released_by_staff(store, ev.conversation_id, timeutil.now(), ev.kind)
+        store.release_conversation(ev.conversation_id, timeutil.now())
+        if ev.kind == "conversation_closed":                         # final summary of the closed chat
+            store.summary_touch(ev.conversation_id, ev.user_id, time.time(), force=True)
+        store.emit([{"type": "mode", "user_id": ev.user_id or ev.conversation_id, "at": timeutil.iso(timeutil.now()),
+                     "conversation_id": ev.conversation_id, "mode": "BOT", "by": ev.kind}])
+        return 200, {"ok": True, "released": ev.conversation_id}, ev
     if ev.kind == "staff_message":                                   # HUMAN at once (v4 step 6)
         store.set_human_flag(ev.conversation_id, S.get("human_mode_release_hours", 12), timeutil.now())
+        store.staff_wait_end(ev.conversation_id)                     # staff answered: no staff-silent alert
+        from .handoff_recovery import agent_replied
+        sender = str((payload.get("data") or {}).get("user_id", ""))
+        agent_replied(store, ev.conversation_id, timeutil.now(), agent_id=sender)   # keeps HUMAN, cancels recovery
+        store.summary_touch(ev.conversation_id, ev.user_id, time.time())
     if ev.kind not in ("user_message", "staff_message"):
         return 200, {"ok": True, "skipped": ev.kind}, ev
     event = {"event_id": ev.event_id, "kind": ev.kind, "user_id": ev.user_id,
@@ -130,11 +148,77 @@ def _webhook(payload, headers):
              "received_ms": int(time.time() * 1000), "source": "webhook"}
     if SERVER:
         queued = intake.enqueue(event)                              # Redis down -> raises -> 503 at once
+        if queued and ev.kind == "user_message" and not store.human_flag(ev.conversation_id, timeutil.now()):
+            store.typing_set(ev.conversation_id, "queued", S.get("typing_ttl_seconds", 90))   # PWA typing truth
         store.r.set("tanya:metrics:webhook_last", int(time.time()))   # monitoring, only after a good enqueue
         return 200, {"ok": True, "queued": queued}, ev
     dev_handler.adapter = adapter
     dev_handler(event)                                               # dev: process inline
     return 200, {"ok": True}, ev
+
+
+# ------------------------------------------------------------------ PWA status + CRM callbacks API (06-Oct-2026)
+def _key_ok(request: Request) -> bool:
+    """Server-to-server calls only (PWA backend, CRM page). Key = TANYA_API_KEY, else the CRM webhook secret."""
+    import hmac as _h
+    want = S.env("TANYA_API_KEY", "") or S.env("CRM_WEBHOOK_SECRET", "")
+    got = request.headers.get("x-tanya-key", "")
+    return bool(want) and _h.compare_digest(str(got), str(want))
+
+
+@app.get("/pwa/status/{conversation_id}")
+def pwa_status(conversation_id: str, request: Request):
+    """What the customer's chat should show: Tanya working (typing), or waiting for staff (HUMAN)."""
+    if not _key_ok(request):
+        return JSONResponse({"ok": False}, status_code=403)
+    now = timeutil.now()
+    h = store.handoff_get(conversation_id)
+    return {"ok": True, "typing": store.typing_get(conversation_id),
+            "mode": "HUMAN" if store.human_flag(conversation_id, now) else "BOT",
+            "handoff": {k: h.get(k) for k in ("status", "period", "started_at", "due_at")} if h else None}
+
+
+def _cb_conn():
+    from .callbacks import connect
+    return connect()
+
+
+@app.get("/crm/callbacks")
+def crm_callbacks(request: Request, view: str = "open", days: int = 7):
+    if not _key_ok(request):
+        return JSONResponse({"ok": False}, status_code=403)
+    from .callbacks import list_callbacks
+    conn = _cb_conn()
+    try:
+        return {"ok": True, **list_callbacks(conn, view, max(1, min(days, 90)))}
+    finally:
+        conn.close()
+
+
+@app.post("/crm/callbacks/{callback_id}/done")
+async def crm_callback_done(callback_id: str, request: Request):
+    if not _key_ok(request):
+        return JSONResponse({"ok": False}, status_code=403)
+    body = await request.json()
+    from .callbacks import mark_done
+    conn = _cb_conn()
+    try:
+        ok = await run_in_threadpool(mark_done, conn, callback_id, str(body.get("actor") or "crm"), str(body.get("note") or ""))
+        return {"ok": ok}
+    finally:
+        conn.close()
+
+
+@app.get("/crm/callbacks/{callback_id}/audit")
+def crm_callback_audit(callback_id: str, request: Request):
+    if not _key_ok(request):
+        return JSONResponse({"ok": False}, status_code=403)
+    from .callbacks import audit_for
+    conn = _cb_conn()
+    try:
+        return {"ok": True, "audit": audit_for(conn, callback_id)}
+    finally:
+        conn.close()
 
 
 @app.post("/events/app")

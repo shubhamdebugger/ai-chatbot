@@ -93,6 +93,11 @@ def gate(rec, store, now, injection_flag: bool, text: str = ""):
     ks = store.killswitch()
     if ks == "stopped":
         return GATE_SILENT, None, "KILL_STOPPED"
+    released = getattr(store, "release_time", lambda c: None)(rec["conversation_id"])
+    m = rec.get("mode", {})
+    if released and m.get("state") == "HUMAN" and parse(m["since"]) <= released \
+            and str(m.get("conversation_id") or rec["conversation_id"]) == str(rec["conversation_id"]):
+        release_to_bot(rec, now, by="staff_release")    # staff closed this chat or typed #bot after taking over
     if store.human_flag(rec["conversation_id"], now) and rec["mode"].get("state") != "HUMAN":
         human_takeover(rec, now, by="webhook flag")
     if mode_is_human(rec, now) or store.human_flag(rec["conversation_id"], now):

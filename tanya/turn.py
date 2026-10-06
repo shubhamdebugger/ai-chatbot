@@ -102,6 +102,8 @@ def n_understand(st):
         st["labels"]["failed"] = False
         return st
     history = mm.history_for_prompt(rec)[:-1]
+    if st.get("kb") is not None and hasattr(st["kb"], "prefetch"):
+        st["kb"].prefetch(st["masked"])          # Feature 6: embedding runs during the understand call
     labels, res = understand(st["llm"], st["masked"], history)
     _usage(st, res)
     st["labels"] = labels
@@ -155,12 +157,12 @@ def n_retrieve(st):
     if d.action == "REFUSE_AND_TEACH":
         # always the Logic · Risk · Exit lesson first, then the closest lesson to his question
         base = K.search("logic risk exit checklist before any trade", top_k=1, categories=["Lesson"])
-        more = [h for h in K.search(q, top_k=2, categories=["Lesson"]) if not base or h["chunk_id"] != base[0]["chunk_id"]]
+        more = [h for h in K.search(q, top_k=2, categories=["Lesson"], vec_query=st["masked"]) if not base or h["chunk_id"] != base[0]["chunk_id"]]
         st["hits"] = (base + more)[:2]
     elif d.action in ("ANSWER_EDUCATION", "ANSWER", "ANSWER_ONLY", "LOG_GRIEVANCE", "GREETING"):
-        st["hits"] = K.search(q) if q.strip() else []
+        st["hits"] = K.search(q, vec_query=st["masked"]) if q.strip() else []
     elif d.action == "ANSWER_SUPPORT":
-        st["hits"] = K.search(q, categories=["FAQ"])
+        st["hits"] = K.search(q, categories=["FAQ"], vec_query=st["masked"])
         if not st["hits"] or is_placeholder(st["hits"][0]):
             # no approved answer → never guess: a case goes to the team (FX-19)
             st["decision"] = Decision("SUPPORT_CASE", "R17-NOAPPROVED", fixed_line="FX-19")
@@ -204,6 +206,14 @@ def _smalltalk_line(rec, st, cat, disclosed_now):
     return (fx, _rotate(rec, fx, ROT_TWO)) if fx else ("", "")
 
 
+def _callback_event(st, cb, reason, promise):
+    """A promise of contact becomes a tracked callback (callbacks.py): conversation, source message, due time."""
+    from .handoff_recovery import callback_due
+    st["callback_emitted"] = True
+    _ev(st, "callback", conversation_id=st["rec"].get("conversation_id"), source_message_id=st.get("event_id"),
+        reason=reason, promise=promise, due_at=iso(callback_due(st["now"])), **cb)
+
+
 def n_compose(st):
     rec, now, d = st["rec"], st["now"], st["decision"]
     lang = st["labels"].get("language") or rec["profile"].get("language", "hinglish")
@@ -225,6 +235,7 @@ def n_compose(st):
         fx, variant = _smalltalk_line(rec, st, cat, disclosed_now)
         if cat == "greeting":
             rec["session"]["greeted_this_session"] = True
+    pending_cb = []
     if fx:
         vals = {"name": name, "limit": S.get("education_questions_per_day", 30)}
         if fx == "FX-25":
@@ -239,21 +250,23 @@ def n_compose(st):
             vals["when"] = when_phrase(now, lang)
         if fx in ("FX-07", "FX-08"):
             cb = request_callback(rec, "person", now, vals["when"])
-            _ev(st, "callback", **cb)
+            pending_cb.append(cb)
         if fx == "FX-14":
             plan, _ = PACK.plan_for_profile(rec["facts"])
             vals["plan_line"] = (f"{plan['plan_name']} — ₹{int(float(plan['price_inr'])):,} ({plan['duration']}). "
                                  if plan else "")
             cb = request_callback(rec, "purchase", now, vals["when"])
-            _ev(st, "callback", **cb)
+            pending_cb.append(cb)
         if fx == "FX-13":
             slots, phrases = two_slots(now, lang)
             vals["slot_1"], vals["slot_2"] = phrases
             cb = request_callback(rec, "call_preference", now, " / ".join(phrases), [iso(s) for s in slots])
-            _ev(st, "callback", **cb)
+            pending_cb.append(cb)
         if fx == "FX-09":
             rec["journey"]["consent_line_given"] = True
         B.append({"id": fx, "kind": "fixed", "text": PACK.fixed(fx, lang, variant=variant, **vals)})
+        for cb in pending_cb:
+            _callback_event(st, cb, fx, B[-1]["text"])
     # 3. Tanya's own words, unless the action is fixed-only
     if d.action not in FIXED_ONLY and d.action not in ("SUPPORT_CASE", "FIXED_GATE"):
         system, ex_ids = build(d.action, rec, st["labels"], mm.trial_day(rec, now), st["hits"], d.addon,
@@ -344,6 +357,13 @@ def n_after(st):
         rec["journey"]["last_topic"] = st["hits"][0].get("title", "")   # for FX-25
     if st["kind"] == "app_open" and st["bubbles"]:
         rec["journey"]["greeted_at"] = iso(now)
+    # a promise of contact in any line that has no callback yet -> callback (Tushar 06-Oct-2026)
+    if not st.get("callback_emitted"):
+        from .callbacks import promise_in
+        kind, promise = promise_in(st["bubbles"])
+        if kind:
+            cb = request_callback(rec, kind, now, when_phrase(now, st["labels"].get("language", "hinglish")))
+            _callback_event(st, cb, kind, promise)
     # her messages, word for word
     for b in st["bubbles"]:
         n = mm.add_message(rec, "assistant", b["text"], now, meta={"id": b["id"], "action": d.action})

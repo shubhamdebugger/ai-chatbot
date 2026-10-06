@@ -8,6 +8,7 @@ Optional: REDIS_URL set → Redis memory and streams tested; MYSQL_* set → per
 import os
 import sys
 import tempfile
+import time
 import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -554,6 +555,530 @@ def knowledge_search_finds_lesson():
     assert hits and hits[0]["doc_id"] == "LES-002", hits[:2]
 
 
+@test
+def llm_breaker_skips_provider_after_account_refusal():
+    """05-Oct: the Anthropic account ran out of credit; every AI call first got a refusal, then the fallback. After
+    the first account refusal the provider is skipped (the next calls go straight to the fallback)."""
+    import httpx
+    import tanya.llm as L
+    calls = []
+
+    def refused(model, system, messages, *a, **k):
+        calls.append(model)
+        req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        resp = httpx.Response(400, request=req, text='{"type":"error","error":{"type":"invalid_request_error",'
+                              '"message":"Your credit balance is too low to access the Anthropic API."}}')
+        raise httpx.HTTPStatusError("400 from Anthropic: credit balance is too low", request=req, response=resp)
+    saved = {k: os.environ.get(k) for k in ("PROVIDER", "ANTHROPIC_API_KEY", "FALLBACK_PROVIDER")}
+    orig = L._PROVIDERS["anthropic"]
+    try:
+        os.environ.update(PROVIDER="anthropic", ANTHROPIC_API_KEY="test", FALLBACK_PROVIDER="mock")
+        L._PROVIDERS["anthropic"] = refused
+        L._DOWN.clear()
+        llm = LLM()
+        r1 = llm.call("reply", "fast", "sys", [{"role": "user", "content": "hello"}])
+        r2 = llm.call("reply", "fast", "sys", [{"role": "user", "content": "hello again"}])
+        assert r1.ok and r2.ok and r1.provider == r2.provider == "mock", (r1.provider, r2.provider)
+        assert len(calls) == 1, calls                   # refused once, then skipped
+        assert L.provider_down("anthropic"), L._DOWN
+        # a busy answer (no account problem) must NOT open the breaker
+        L._DOWN.clear()
+        assert not L._account_error(httpx.HTTPStatusError("busy", request=httpx.Request("POST", "http://x"),
+                                    response=httpx.Response(529, request=httpx.Request("POST", "http://x"))))
+    finally:
+        L._PROVIDERS["anthropic"] = orig
+        L._DOWN.clear()
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# ---------------------------------------------------------------- 06-Oct-2026: handoff recovery, summary, callbacks
+def _evs(store):
+    import json as _j
+    p = store.events_path
+    return [_j.loads(x) for x in p.read_text(encoding="utf-8").splitlines()] if p.exists() else []
+
+
+class _FakeCRM:
+    """Adapter stand-in: records posts/notes; staff reply, agent and conversation are set per test."""
+    tanya_agent = "2"
+
+    def __init__(self, replied=False, agent="", messages=None):
+        self.replied, self.agent, self.messages, self.posts, self.notes = replied, agent, messages or [], [], {}
+
+    def staff_replied_after(self, conv, after):
+        if isinstance(self.replied, Exception):
+            raise self.replied
+        return self.replied
+
+    def conversation_agent(self, conv):
+        return self.agent
+
+    def post_message(self, conv, text):
+        self.posts.append((conv, text))
+        return str(900 + len(self.posts))
+
+    def get_conversation(self, conv, limit=30):
+        if isinstance(self.messages, Exception):
+            raise self.messages
+        return self.messages[-limit:]
+
+    def write_summary_note(self, conv, text):
+        self.notes[conv] = text
+        return "N1"
+
+
+class _FakeIntake:
+    def __init__(self):
+        self.events = []
+
+    def enqueue(self, ev):
+        self.events.append(ev)
+        return True
+
+
+@test
+def business_hours_deadlines_and_callback_due():
+    from tanya.handoff_recovery import callback_due, handoff_deadline, in_business_hours
+    assert in_business_hours(DAY) and not in_business_hours(NIGHT)
+    p, d = handoff_deadline(DAY)
+    assert p == "day" and d == DAY + timedelta(minutes=10), (p, d)
+    p, d = handoff_deadline(NIGHT)
+    assert p == "night" and d == NIGHT + timedelta(hours=12), (p, d)
+    assert callback_due(DAY) == DAY + timedelta(minutes=10)
+    nxt = callback_due(NIGHT)                                       # 21:40 -> next day 07:00 + 10 min
+    assert (nxt.day, nxt.hour, nxt.minute) == (NIGHT.day + 1, 7, 10), nxt
+    early = NIGHT.replace(hour=5, minute=0)                          # 05:00 -> same day 07:10
+    assert callback_due(early).hour == 7 and callback_due(early).day == early.day
+
+
+@test
+def tanya_handoff_enters_human_mode_with_deadline():
+    """Tanya decides a person must take over -> HUMAN mode, handoff recorded (time, reason, deadline)."""
+    from tanya.crm_adapter import ConsoleAdapter
+    from tanya.workers import TurnHandler
+    os.environ["USE_LANGGRAPH"] = "0"
+    s, a = fresh_store(), ConsoleAdapter()
+    timeutil.set_clock(DAY)
+    TurnHandler(s, LLMX, KB, a, lambda u: PACK.test_users.get(u))(
+        {"event_id": "701", "kind": "user_message", "user_id": "U1002", "conversation_id": "C70",
+         "text": "Mujhe kisi insaan se baat karni hai"})
+    h = s.handoff_get("C70")
+    assert h and h["status"] == "open" and h["period"] == "day" and h["action"] == "HAND_OVER_PERSON", h
+    assert s.human_flag("C70", DAY) and h["last_message_id"] == "701"
+    starts = [e for e in _evs(s) if e["type"] == "handoff" and e.get("op") == "start"]
+    cbs = [e for e in _evs(s) if e["type"] == "callback"]
+    assert starts and cbs and cbs[0]["conversation_id"] == "C70" and cbs[0]["promise"] and cbs[0]["due_at"], cbs
+    assert s.typing_get("C70") is None                                # typing never left on after a turn
+    assert a.briefs == {}                    # 06-Oct: no "Ms Tanya - Lead Brief" note in the CRM (crm_lead_brief_note off)
+
+
+@test
+def no_agent_reply_day_recovers_after_10_minutes():
+    from tanya.handoff_recovery import recovery_check, start_handoff
+    s, crm, intake = fresh_store(), _FakeCRM(messages=[{"id": 801, "user_id": "U1", "user_type": "lead",
+                                                        "message": "koi hai?"}]), _FakeIntake()
+    start_handoff(s, "C80", "U1", "HAND_OVER_PERSON", "R06", DAY, last_message_id="800")
+    assert recovery_check(s, crm, intake, now=DAY + timedelta(minutes=9)) == []        # not yet
+    assert recovery_check(s, crm, intake, now=DAY + timedelta(minutes=11)) == ["C80"]
+    assert crm.posts == [("C80", PACK.fixed("FX-32", "hinglish"))], crm.posts
+    assert not s.human_flag("C80", DAY + timedelta(minutes=11)) and s.handoff_get("C80")["status"] == "recovered"
+    assert intake.events and intake.events[0]["event_id"] == "801-resume", intake.events   # his waiting message
+    assert recovery_check(s, crm, intake, now=DAY + timedelta(minutes=12)) == [] and len(crm.posts) == 1   # once
+
+
+@test
+def agent_reply_keeps_human_and_cancels_recovery():
+    from tanya.handoff_recovery import agent_replied, recovery_check, start_handoff
+    s, crm = fresh_store(), _FakeCRM()
+    start_handoff(s, "C81", "U1", "HAND_OVER_PERSON", "R06", DAY, last_message_id="810")
+    assert agent_replied(s, "C81", DAY + timedelta(minutes=3), agent_id="70800")
+    assert recovery_check(s, crm, now=DAY + timedelta(minutes=30)) == [] and crm.posts == []
+    assert s.human_flag("C81", DAY + timedelta(minutes=30)) and s.handoff_get("C81")["status"] == "agent_replied"
+
+
+@test
+def assigned_agent_without_reply_still_recovers():
+    from tanya.handoff_recovery import recovery_check, start_handoff
+    s, crm = fresh_store(), _FakeCRM(agent="70800")
+    start_handoff(s, "C82", "U1", "HAND_OVER_PERSON", "R06", DAY, last_message_id="820")
+    assert recovery_check(s, crm, now=DAY + timedelta(minutes=11)) == ["C82"]
+    audits = [e["event"] for e in _evs(s) if e["type"] == "audit"]
+    assert "agent_assigned_no_reply" in audits and "recovered_by_tanya" in audits, audits
+
+
+@test
+def staff_reply_with_lost_webhook_still_keeps_human():
+    """The CRM shows a staff reply although its webhook never arrived: HUMAN stays, no recovery message."""
+    from tanya.handoff_recovery import recovery_check, start_handoff
+    s, crm = fresh_store(), _FakeCRM(replied=True)
+    start_handoff(s, "C83", "U1", "HAND_OVER_PERSON", "R06", DAY, last_message_id="830")
+    assert recovery_check(s, crm, now=DAY + timedelta(minutes=11)) == [] and crm.posts == []
+    assert s.handoff_get("C83")["status"] == "agent_replied"
+
+
+@test
+def crm_unreachable_defers_recovery_never_guesses():
+    from tanya.handoff_recovery import recovery_check, start_handoff
+    s, crm = fresh_store(), _FakeCRM(replied=ConnectionError("down"))
+    start_handoff(s, "C84", "U1", "HAND_OVER_PERSON", "R06", DAY, last_message_id="840")
+    assert recovery_check(s, crm, now=DAY + timedelta(minutes=11)) == [] and s.handoff_get("C84")["status"] == "open"
+    crm.replied = False
+    assert recovery_check(s, crm, now=DAY + timedelta(minutes=12)) == ["C84"]
+
+
+@test
+def night_handoff_waits_12_hours_then_fx33():
+    from tanya.handoff_recovery import recovery_check, start_handoff
+    s, crm = fresh_store(), _FakeCRM()
+    start_handoff(s, "C85", "U1", "HAND_OVER_PERSON", "R06", NIGHT, last_message_id="850")
+    assert recovery_check(s, crm, now=NIGHT + timedelta(minutes=30)) == []
+    assert recovery_check(s, crm, now=NIGHT + timedelta(hours=11, minutes=59)) == []
+    assert recovery_check(s, crm, now=NIGHT + timedelta(hours=12, minutes=1)) == ["C85"]
+    assert crm.posts[-1][1] == PACK.fixed("FX-33", "hinglish")
+
+
+@test
+def staff_close_during_handoff_releases_and_is_audited():
+    from tanya.handoff_recovery import recovery_check, released_by_staff, start_handoff
+    s, crm = fresh_store(), _FakeCRM()
+    start_handoff(s, "C86", "U1", "HAND_OVER_PERSON", "R06", DAY, last_message_id="860")
+    released_by_staff(s, "C86", DAY + timedelta(minutes=2), "conversation_closed")
+    s.release_conversation("C86", DAY + timedelta(minutes=2))
+    assert recovery_check(s, crm, now=DAY + timedelta(minutes=11)) == [] and crm.posts == []
+    assert "released_by_staff" in [e["event"] for e in _evs(s) if e["type"] == "audit"]
+
+
+@test
+def summary_throttled_built_from_conversation_and_kept_on_failure():
+    from tanya import summaries
+    s = fresh_store()
+    msgs = [{"id": i, "user_id": "U1" if i % 2 else "2", "user_type": "lead" if i % 2 else "bot",
+             "message": f"line {i}"} for i in range(1, 7)]
+    for _ in range(4):
+        s.summary_touch("C90", "U1", NIGHT.timestamp())
+    assert summaries.summarize_due(s, LLMX, _FakeCRM(messages=msgs), now=NIGHT) == []        # 4 < 5 and fresh
+    s.summary_touch("C90", "U1", NIGHT.timestamp())
+    crm = _FakeCRM(messages=msgs)
+    assert summaries.summarize_due(s, LLMX, crm, now=NIGHT) == ["C90"]
+    note = crm.notes["C90"]
+    assert note.startswith("Last Updated: ") and "\nSummary: " in note, note
+    ev = [e for e in _evs(s) if e["type"] == "conv_summary"]
+    assert ev and ev[0]["conversation_id"] == "C90" and ev[0]["summary"], ev
+    assert "C90" not in s.summary_dirty()
+    s.summary_touch("C91", "U2", NIGHT.timestamp(), force=True)                              # forced (handoff)
+    assert summaries.summarize_due(s, LLMX, _FakeCRM(messages=ConnectionError("crm down")), now=NIGHT) == []
+    assert "C91" in s.summary_dirty() and s.summary_dirty()["C91"]["retry_after"] > NIGHT.timestamp()
+    assert any(e.get("kind") == "summary_failed" for e in _evs(s))
+    s.summary_touch("C92", "U3", NIGHT.timestamp() - 700)                                    # 1 msg, 11+ min old
+    assert summaries.due(s.summary_dirty()["C92"], NIGHT.timestamp())
+
+
+@test
+def crm_hidden_event_is_not_an_agent_reply():
+    """Live bug 06-Oct: the empty 'conversation-department-update' message Support Board writes (as the API admin)
+    when Tanya hands over was counted as an agent reply, so the handoff was never recovered."""
+    from tanya.crm_adapter import SupportBoardAdapter
+    os.environ.update(CRM_WEBHOOK_SECRET="s3cret", TANYA_AGENT_ID="2")
+    a = SupportBoardAdapter()
+    a.get_conversation = lambda conv, limit=30: [
+        {"id": 100, "user_id": "70997", "user_type": "lead", "message": "Mujhe insaan se baat karni hai"},
+        {"id": 101, "user_id": "2", "user_type": "bot", "message": "Team member jaldi judega"},
+        {"id": 102, "user_id": "70799", "user_type": "admin", "message": "", "attachments": "",
+         "payload": '{"event":"conversation-department-update-1"}'}]
+    assert a.staff_replied_after("C1", 100) is False
+    a.get_conversation = lambda conv, limit=30: [
+        {"id": 103, "user_id": "70800", "user_type": "agent", "message": "Hi, main madad karta hoon"}]
+    assert a.staff_replied_after("C1", 100) is True
+
+
+@test
+def promise_detection_creates_callbacks():
+    from tanya.callbacks import promise_in
+    assert promise_in([{"id": "FX-08", "kind": "fixed", "text": "x"}])[0] == "person"
+    assert promise_in([{"id": "AI", "kind": "ai", "text": "Our senior will call you tomorrow."}])[0] == "team_followup"
+    assert promise_in([{"id": "AI", "kind": "ai", "text": "Hamari team aapko call karegi."}])[0] == "team_followup"
+    assert promise_in([{"id": "AI", "kind": "ai", "text": "Stop loss protects your capital."}]) == (None, None)
+
+
+@test
+def persister_writes_handoff_audit_summary_callback():
+    from tanya.workers import Persister
+    sql = []
+
+    class Cur:
+        rowcount = 1
+
+        def execute(self, q, args=()):
+            sql.append((" ".join(q.split()), args))
+            return 1
+
+        def fetchall(self):
+            return [("CB-1",)]
+    p = Persister.__new__(Persister)
+    at = "2026-10-06T11:00:00+05:30"
+    p._one(Cur(), {"type": "handoff", "op": "start", "handoff_id": "HO-1", "conversation_id": "C1", "user_id": "U",
+                   "action": "HAND_OVER_PERSON", "reason": "R06", "period": "day", "started_at": at, "due_at": at,
+                   "last_message_id": "5", "at": at})
+    p._one(Cur(), {"type": "handoff", "op": "update", "handoff_id": "HO-1", "status": "recovered", "recovered_at": at,
+                   "user_id": "U", "at": at})
+    p._one(Cur(), {"type": "audit", "entity": "handoff", "entity_id": "HO-1", "event": "started", "actor": "tanya",
+                   "detail": {}, "user_id": "U", "at": at})
+    p._one(Cur(), {"type": "conv_summary", "conversation_id": "C1", "user_id": "U", "summary": "s", "at": at})
+    p._one(Cur(), {"type": "callback", "id": "CB-1", "user_id": "U", "kind": "person", "state": "requested",
+                   "requested_at": at, "conversation_id": "C1", "due_at": at, "promise": "p", "at": at})
+    p._one(Cur(), {"type": "callback_event", "conversation_id": "C1", "event": "recovered_by_tanya", "user_id": "U",
+                   "at": at})
+    q = [x[0] for x in sql]
+    assert q[0].startswith("INSERT IGNORE INTO orch_handoffs") and q[1].startswith("UPDATE orch_handoffs SET status")
+    assert q[2].startswith("INSERT INTO orch_audit") and q[3].startswith("INSERT INTO orch_conv_summaries")
+    assert q[4].startswith("INSERT INTO orch_callbacks") and "INSERT INTO orch_audit" in q[5]     # 'created'
+    assert any(x.startswith("UPDATE orch_callbacks SET recovered_at") for x in q), q
+
+
+def _sb_adapter():
+    from tanya.crm_adapter import SupportBoardAdapter
+    os.environ.update(CRM_WEBHOOK_SECRET="s3cret", TANYA_AGENT_ID="2")
+    return SupportBoardAdapter()
+
+
+def _events(store):
+    import json as _j
+    p = store.events_path
+    return [_j.loads(x) for x in p.read_text(encoding="utf-8").splitlines()] if p.exists() else []
+
+
+@test
+def webhook_without_message_id_is_rejected_not_guessed():
+    """G5: a message-sent event without a numeric message id is rejected (alert), never queued as id 'None'."""
+    a = _sb_adapter()
+    base = {"function": "message-sent", "key": "s3cret"}
+    ev = a.parse_webhook(dict(base, data={"user_id": "70", "conversation_user_id": "70", "conversation_id": "9",
+                                          "message": "hi"}), {})
+    assert ev.kind == "invalid_event" and ev.event_id == "", ev
+    ok = a.parse_webhook(dict(base, data={"user_id": "70", "conversation_user_id": "70", "conversation_id": "9",
+                                          "message_id": 123, "message": "hi"}), {})
+    assert ok.kind == "user_message" and ok.event_id == "123", ok
+
+
+@test
+def chat_closed_or_hash_bot_releases_human_mode():
+    """v4 §7: staff closing the chat (status 3/4) or typing #bot hands it back to Tanya; another staff message
+    afterwards takes it over again."""
+    a = _sb_adapter()
+    closed = a.parse_webhook({"function": "conversation-status-updated", "key": "s3cret",
+                              "data": {"conversation_id": "C5", "status_code": 3}}, {})
+    assert closed.kind == "conversation_closed" and closed.conversation_id == "C5", closed
+    other = a.parse_webhook({"function": "conversation-status-updated", "key": "s3cret",
+                             "data": {"conversation_id": "C5", "status_code": 2}}, {})
+    assert other.kind == "status_change", other
+    hb = a.parse_webhook({"function": "message-sent", "key": "s3cret",
+                          "data": {"user_id": "7", "conversation_user_id": "70", "conversation_id": "C5",
+                                   "message_id": 9, "message": " #BOT "}}, {})
+    assert hb.kind == "release_to_bot", hb
+    from tanya import policy
+    s, t0 = fresh_store(), NIGHT
+    rec = rec_for("U1001", t0)
+    rec["conversation_id"] = "C5"
+    policy.human_takeover(rec, t0, by="staff", conversation_id="C5")
+    s.set_human_flag("C5", 12, t0)
+    assert policy.gate(rec, s, t0 + timedelta(minutes=1), False, "price?")[2] == "HUMAN_MODE"
+    s.release_conversation("C5", t0 + timedelta(minutes=2))
+    assert policy.gate(rec, s, t0 + timedelta(minutes=3), False, "price?")[0] == policy.GATE_GO
+    assert rec["mode"]["state"] == "BOT" and rec["mode"]["by"] == "staff_release"
+    policy.human_takeover(rec, t0 + timedelta(minutes=4), by="staff", conversation_id="C5")   # staff writes again
+    assert policy.gate(rec, s, t0 + timedelta(minutes=5), False, "price?")[2] == "HUMAN_MODE"
+
+
+@test
+def staff_silent_alert_after_limit_once():
+    """v4 §7.6: a customer waiting for staff longer than staff_silent_alert_minutes raises one alert."""
+    from tanya.workers import staff_silent_check
+    s = fresh_store()
+    s.staff_wait_start("C1", "U1", NIGHT - timedelta(minutes=6))
+    s.staff_wait_start("C2", "U2", NIGHT - timedelta(minutes=2))
+    assert staff_silent_check(s, NIGHT) == ["C1"]
+    assert staff_silent_check(s, NIGHT) == []                       # once only
+    alerts = [e for e in _events(s) if e.get("kind") == "staff_silent"]
+    assert len(alerts) == 1 and alerts[0]["conversation_id"] == "C1" and alerts[0]["waited_s"] >= 360, alerts
+    s.staff_wait_end("C2")
+    assert staff_silent_check(s, NIGHT + timedelta(minutes=10)) == []   # staff answered C2
+
+
+@test
+def dead_letter_records_alerts_hands_over_and_tells_customer():
+    """v4 §12 point 5 / G7: dead letter -> orch_dead_letters event, alert, outcome DEAD, HUMAN, fixed line FX-05."""
+    import json as _j
+    from tanya.crm_adapter import ConsoleAdapter
+    from tanya.workers import dead_letter_handler
+    s, a = fresh_store(), ConsoleAdapter()
+    timeutil.set_clock(NIGHT)
+    ev = {"event_id": "777", "kind": "user_message", "user_id": "U1001", "conversation_id": "C9", "text": "hi"}
+    dead_letter_handler(s, a)("tanya:in:3", "1-0", {"event": _j.dumps(ev)})
+    types = [(e["type"], e.get("kind") or e.get("status")) for e in _events(s)]
+    assert ("dead_letter", None) in types and ("alert", "dead_letter") in types and ("outcome", "DEAD") in types, types
+    assert s.human_flag("C9", NIGHT)
+    assert a.outbox.get("C9") and a.outbox["C9"][-1].strip() == PACK.fixed("FX-05", "hinglish").strip(), a.outbox.get("C9")
+
+
+@test
+def persister_writes_outcome_reply_id_and_dead_letter():
+    """The new lifecycle events reach MySQL (checked on the SQL issued; live DB rows in the integration run)."""
+    from tanya.workers import Persister
+    sql = []
+
+    class Cur:
+        def execute(self, q, args=()):
+            sql.append((" ".join(q.split()), args))
+    p = Persister.__new__(Persister)
+    at = "2026-10-05T12:00:00+05:30"
+    p._one(Cur(), {"type": "outcome", "event_id": "55", "user_id": "U", "status": "REPLIED", "at": at})
+    p._one(Cur(), {"type": "reply_posted", "user_id": "U", "at": at, "source_event_id": "55", "text": "x",
+                   "crm_message_id": "900"})
+    p._one(Cur(), {"type": "dead_letter", "user_id": "U", "at": at, "stream": "tanya:in:1", "stream_id": "1-0",
+                   "body": {"a": 1}})
+    assert sql[0][0].startswith("UPDATE orch_inbox SET status") and sql[0][1][0] == "REPLIED" and sql[0][1][2] == "55"
+    assert sql[1][0].startswith("UPDATE orch_replies SET source_event_id") and sql[1][1][:2] == ("55", "900")
+    assert sql[2][0].startswith("INSERT INTO orch_dead_letters") and sql[2][1][:2] == ("tanya:in:1", "1-0")
+
+
+@test
+def worker_records_outcome_and_waiting_for_staff():
+    """A normal turn ends REPLIED with the CRM id of each bubble; a turn silenced by HUMAN ends SKIPPED_HUMAN and
+    the customer is registered as waiting for staff."""
+    from tanya.crm_adapter import ConsoleAdapter
+    from tanya.workers import TurnHandler
+    os.environ["USE_LANGGRAPH"] = "0"
+    s, a = fresh_store(), ConsoleAdapter()
+    timeutil.set_clock(NIGHT)
+    h = TurnHandler(s, LLMX, KB, a, lambda u: PACK.test_users.get(u))
+    h({"event_id": "601", "kind": "user_message", "user_id": "U1001", "conversation_id": "C61", "text": "Stop-loss kya hota hai?"})
+    s.set_human_flag("C62", 12, NIGHT)
+    h({"event_id": "602", "kind": "user_message", "user_id": "U1002", "conversation_id": "C62", "text": "price?"})
+    out = {e["event_id"]: e["status"] for e in _events(s) if e["type"] == "outcome"}
+    assert out == {"601": "REPLIED", "602": "SKIPPED_HUMAN"}, out
+    posted = [e for e in _events(s) if e["type"] == "reply_posted"]
+    assert posted and all(e["source_event_id"] == "601" and e["crm_message_id"] for e in posted), posted
+    assert [c for c, _, _ in s.staff_waiting_since(NIGHT.timestamp() + 1)] == ["C62"]
+
+
+@test
+def openai_reasoning_effort_per_job_and_dropped_when_rejected():
+    """Luna's default reasoning effort (medium) made turns slow; each job sends its own effort, and a model that
+    rejects the parameter is called again without it (remembered)."""
+    import httpx
+    import tanya.llm as L
+    sent = []
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        sent.append(dict(json))
+        req = httpx.Request("POST", url)
+        if json.get("model") == "plain-model" and "reasoning_effort" in json:
+            return httpx.Response(400, request=req, text='{"error":{"message":"Unsupported parameter: reasoning_effort"}}')
+        return httpx.Response(200, request=req, json={"choices": [{"message": {"content": "ok"}}], "usage": {}})
+    orig = L.HTTP.post
+    saved = {k: os.environ.get(k) for k in ("OPENAI_API_KEY", "OPENAI_REASONING_EFFORT_CHECK")}
+    try:
+        os.environ["OPENAI_API_KEY"] = "test"
+        os.environ.pop("OPENAI_REASONING_EFFORT_CHECK", None)
+        L.HTTP.post = fake_post
+        L._NO_REASONING.discard("plain-model")
+        for purpose, want in (("understand", "none"), ("check", "low")):
+            L._PURPOSE.value = purpose
+            L._openai("gpt-6-luna", "sys", [{"role": "user", "content": "hi"}], 0.0, 50, False, 5)
+            assert sent[-1].get("reasoning_effort") == want, (purpose, sent[-1])
+        os.environ["OPENAI_REASONING_EFFORT_CHECK"] = "medium"          # .env override wins
+        L._openai("gpt-6-luna", "sys", [{"role": "user", "content": "hi"}], 0.0, 50, False, 5)
+        assert sent[-1].get("reasoning_effort") == "medium", sent[-1]
+        text, _, _ = L._openai("plain-model", "sys", [{"role": "user", "content": "hi"}], 0.0, 50, False, 5)
+        assert text == "ok" and "reasoning_effort" not in sent[-1] and "plain-model" in L._NO_REASONING, sent[-2:]
+    finally:
+        L.HTTP.post = orig
+        L._PURPOSE.value = ""
+        L._NO_REASONING.discard("plain-model")
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def _kb_with_vectors():
+    import copy
+    kb = copy.copy(KB)
+    kb.chunks = [dict(c, vec=[1.0, float(i)]) for i, c in enumerate(KB.chunks)]
+    kb.has_vectors, kb.vec_model, kb.q_url, kb.q_col = True, "fake", "http://qdrant.test", "kb"
+    kb.__dict__.pop("_qcache", None)
+    return kb
+
+
+@test
+def qdrant_empty_collection_falls_back_to_memory_and_heals():
+    """Qdrant restarted empty (self-heal after a corrupted WAL): search must not score every chunk 0 — it uses
+    the in-memory vectors and schedules a rebuild."""
+    kb = _kb_with_vectors()
+    kb.qdrant, healed = True, []
+    kb._query_vector = lambda q: [[1.0, 0.0]]
+    kb._qdrant_scores = lambda qv, cats: {}
+    kb._qdrant_heal = lambda: healed.append(1)
+    hits = kb.search("SL kya hota hai?")
+    assert hits and healed and kb.qdrant is False, (hits[:1], healed, kb.qdrant)
+
+
+@test
+def qdrant_sync_writes_only_when_collection_changed():
+    """Every Tanya process used to re-write all points at start-up; an unclean stop during those writes tore
+    Qdrant's WAL. A complete collection must get no write at all."""
+    import tanya.knowledge as K
+    kb = _kb_with_vectors()
+    ids = [kb._point_id(c) for c in kb.chunks]
+    stored = [{"id": i, "payload": {"key": kb._key(c)}} for i, c in zip(ids, kb.chunks)]
+    writes = []
+
+    class R:
+        def __init__(self, j, code=200):
+            self._j, self.status_code = j, code
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self._j
+
+    deletes = []
+
+    def post(url, **k):
+        if url.endswith("/points/scroll"):
+            return R({"result": {"points": stored}})
+        writes.append(url)
+        if "/points/delete" in url:
+            deletes.append(k.get("json"))
+        return R({})
+    orig = (K.httpx.get, K.httpx.put, K.httpx.post, os.environ.get("KNOWLEDGE_BACKEND"))
+    try:
+        os.environ["KNOWLEDGE_BACKEND"] = "qdrant"
+        K.httpx.get = lambda url, **k: R({"result": {"config": {"params": {"vectors": {"size": 2}}}}})
+        K.httpx.put = lambda url, **k: writes.append(url) or R({})
+        K.httpx.post = post
+        kb._qdrant_sync()
+        assert kb.qdrant and not writes, writes
+        stored[0]["payload"]["key"] = "old-content"         # one chunk changed -> full sync
+        stored.append({"id": "stale-point", "payload": {"key": "gone"}})
+        kb._qdrant_sync()
+        assert kb.qdrant and any("/points?wait=true" in w for w in writes), writes
+        # stale points are deleted by explicit id — a `has_id` filter delete corrupts Qdrant 1.17's WAL
+        assert deletes == [{"points": ["stale-point"]}], deletes
+    finally:
+        K.httpx.get, K.httpx.put, K.httpx.post = orig[:3]
+        if orig[3] is None:
+            os.environ.pop("KNOWLEDGE_BACKEND", None)
+        else:
+            os.environ["KNOWLEDGE_BACKEND"] = orig[3]
+
+
 # ---------------------------------------------------------------- zero-AI small talk (R-SMALLFX)
 @test
 def smalltalk_greeting_first_ever_is_disclosure_only():
@@ -745,6 +1270,85 @@ if os.environ.get("MYSQL_DB"):
             assert c.fetchone()[0] == 1
             c.execute("SELECT state FROM orch_callbacks WHERE user_id='U1001'")
             assert c.fetchone()[0] == "requested"
+
+
+@test
+def slow_ai_answer_is_hedged_first_answer_wins():
+    """Feature 6: a request still unanswered after the hedge delay gets one duplicate; the faster one is used.
+    Both copies failing raises the error, so the normal retry / fallback in LLM.call still runs."""
+    import tanya.llm as L
+    calls = []
+
+    def fake(model, system, messages, temperature, max_tokens, json_mode, timeout, schema=None):
+        calls.append(getattr(L._PURPOSE, "value", ""))
+        if len(calls) == 1:
+            time.sleep(1.5)                       # the slow first request
+            return "slow", 1, 1
+        return "fast", 1, 1
+
+    old_p, old_get = L._PROVIDERS.get("fake"), L.S.get
+    L._PROVIDERS["fake"] = fake
+    L.S.get = lambda name, default=None: {"reply": 0.3} if name == "llm_hedge_after_seconds" else old_get(name, default)
+    try:
+        t0 = time.time()
+        out = L._call_provider("fake", "reply", "m", "sys", [], 0.0, 10, False, 5)
+        assert out[0] == "fast" and time.time() - t0 < 1.2, (out, time.time() - t0)
+        assert calls == ["reply", "reply"]        # purpose (-> reasoning effort) reaches the hedge threads
+        calls.clear()
+        out = L._call_provider("fake", "understand", "m", "sys", [], 0.0, 10, False, 5)   # no hedge configured
+        assert out[0] == "slow" and len(calls) == 1
+
+        def broken(*a, **k):
+            raise RuntimeError("provider down")
+        L._PROVIDERS["fake"] = broken
+        try:
+            L._call_provider("fake", "reply", "m", "sys", [], 0.0, 10, False, 5)
+            raise AssertionError("expected the provider error")
+        except RuntimeError as e:
+            assert "provider down" in str(e)
+    finally:
+        L.S.get = old_get
+        L._PROVIDERS.pop("fake", None)
+        if old_p:
+            L._PROVIDERS["fake"] = old_p
+
+
+@test
+def query_embedding_prefetched_during_understand_is_reused():
+    """Feature 6: the embedding started before the understand call is used by retrieve (one embedding request)."""
+    import tanya.knowledge as K
+    calls = []
+
+    def fake_embed(texts, timeout=60):
+        calls.append(texts[0])
+        time.sleep(0.2)
+        return [[0.1, 0.2]]
+    old = K.embed
+    K.embed = fake_embed
+    try:
+        kb = K.KnowledgeIndex.__new__(K.KnowledgeIndex)
+        kb.has_vectors = True
+        kb.prefetch("Stop loss kya hota hai?")
+        kb.prefetch("Stop loss kya hota hai?")      # second call while pending: no new request
+        assert kb._query_vector("stop loss  KYA hota hai?") == [[0.1, 0.2]]
+        assert calls == ["Stop loss kya hota hai?"]
+        assert kb._query_vector("Stop loss kya hota hai?") == [[0.1, 0.2]] and len(calls) == 1   # cached now
+    finally:
+        K.embed = old
+
+
+@test
+def summary_is_capped_at_40_words():
+    from tanya.summaries import cap_words, SYSTEM
+    assert "HINGLISH" in SYSTEM and "40 words" in SYSTEM
+    short = "Customer ne demat account ke baare mein poocha. Tanya ne steps bataye."
+    assert cap_words(short) == short
+    long = ("Customer ne options trading ke baare mein poocha. " * 6 + "Abhi Tanya ke saath hai.").strip()
+    out = cap_words(long)
+    assert len(out.split()) <= 40 and out.endswith("."), out
+    run_on = " ".join(["shabd"] * 60)
+    out = cap_words(run_on)
+    assert len(out.split()) <= 40 and out.endswith("…"), out
 
 
 if __name__ == "__main__":

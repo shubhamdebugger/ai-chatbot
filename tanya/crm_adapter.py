@@ -19,7 +19,10 @@ import httpx
 from .settings import S
 
 # keep-alive pool to the CRM: every bubble is 1-2 api.php calls, a new TCP connection each time added up
-CRM_HTTP = httpx.Client(limits=httpx.Limits(max_connections=10, max_keepalive_connections=5))
+CRM_HTTP = httpx.Client(limits=httpx.Limits(max_connections=10, max_keepalive_connections=5, keepalive_expiry=120))
+SUMMARY_NOTE_NAME = "Conversation Summary"   # the one CRM note Tanya keeps per conversation (06-Oct-2026)
+CLOSED_STATUS = ("3", "4")          # Support Board conversation status: 3 = archived (closed), 4 = trash
+BOT_COMMANDS = ("#bot",)            # a staff message that is exactly this hands the chat back to Tanya
 
 
 @dataclass
@@ -74,6 +77,14 @@ class CRMAdapter:
         """Create or update ONLY Tanya's own note record (never an agent's). Returns note id."""
         raise NotImplementedError
 
+    def conversation_agent(self, conversation_id: str) -> str:
+        """Id of the agent the CRM assigned to this conversation ('' if none)."""
+        return ""
+
+    def write_summary_note(self, conversation_id: str, text: str) -> str:
+        """Create or update the single 'Conversation Summary' note of this conversation. Returns the note id."""
+        raise NotImplementedError
+
     def hand_to_human(self, conversation_id: str, reason: str) -> bool:
         """Assign / flag the conversation for staff (department or agent, per A8)."""
         raise NotImplementedError
@@ -84,6 +95,7 @@ class ConsoleAdapter(CRMAdapter):
 
     def __init__(self):
         self.outbox = {}      # conversation_id -> list of posted texts
+        self.notes = {}       # conversation_id -> {note_id: text}
         self.briefs = {}      # user_id -> text
         self.handoffs = []
 
@@ -101,6 +113,10 @@ class ConsoleAdapter(CRMAdapter):
 
     def own_message_saved(self, conversation_id, after_message_id, text):
         return text in self.outbox.get(conversation_id, [])
+
+    def write_summary_note(self, conversation_id, text):
+        self.notes.setdefault(conversation_id, {})["summary"] = text
+        return "summary"
 
     def get_user(self, user_id):
         return {}
@@ -158,16 +174,28 @@ class SupportBoardAdapter(CRMAdapter):
             return None                                     # not from our CRM
         fn = payload.get("function", "")
         data = payload.get("data", {}) or {}
-        if fn != "message-sent":                            # TO CONFIRM (A2): event names
+        if fn == "conversation-status-updated" and str(data.get("status_code")) in CLOSED_STATUS:
+            # staff archived / deleted the chat (crm functions_messages.php:285-327): HUMAN mode ends (v4 §7)
+            return IntakeEvent("", "conversation_closed", "", str(data.get("conversation_id", "")), "", payload)
+        if fn != "message-sent":                            # every other CRM event: nothing to do
             return IntakeEvent(str(data.get("id", "")), "status_change", str(data.get("user_id", "")),
                                str(data.get("conversation_id", "")), "", payload)
         sender = str(data.get("user_id", ""))
         conv_user = str(data.get("conversation_user_id") or sender)
         if sender and sender == self.tanya_agent:
             return None                                     # our own reply echoed back — ignore
+        msg_id = str(data.get("message_id") or data.get("id") or "")
+        if not msg_id.isdigit():
+            # G5: never invent an id ("None" would make unrelated events duplicates of each other) and never guess
+            # the author: rejected + alert; the reconciler still finds the message by its real CRM id
+            return IntakeEvent("", "invalid_event", conv_user, str(data.get("conversation_id", "")), "", payload)
         is_staff = (sender != conv_user) or (str(data.get("user_type", "")) in ("agent", "admin"))
+        text = str(data.get("message", ""))
+        if is_staff and text.strip().lower() in BOT_COMMANDS:
+            # staff hands the chat back to Tanya (v4 §7: staff types #bot)
+            return IntakeEvent(msg_id, "release_to_bot", conv_user, str(data.get("conversation_id")), "", payload)
         kind = "staff_message" if is_staff else "user_message"
-        return IntakeEvent(event_id=str(data.get("message_id") or data.get("id")), kind=kind,
+        return IntakeEvent(event_id=msg_id, kind=kind,
                            user_id=conv_user,
                            conversation_id=str(data.get("conversation_id")),
                            text=str(data.get("message", "")), raw=payload)
@@ -181,6 +209,23 @@ class SupportBoardAdapter(CRMAdapter):
         msgs = res.get("messages", []) if isinstance(res, dict) else []
         return msgs[-limit:]
 
+    def conversation_agent(self, conversation_id):
+        res = self._call("conversation", conversation_id=conversation_id)
+        details = res.get("details", {}) if isinstance(res, dict) else {}
+        agent = details.get("agent_id")
+        return "" if agent in (None, "", "0", 0, -1, "-1") else str(agent)
+
+    def write_summary_note(self, conversation_id, text):
+        """One note named 'Conversation Summary' per conversation, updated in place (never a pile of notes)."""
+        for n in self.read_notes(conversation_id) or []:
+            if isinstance(n, dict) and n.get("name") == SUMMARY_NOTE_NAME:
+                self._call("note_update", conversation_id=conversation_id, user_id=self.tanya_agent,
+                           note_id=n.get("id"), message=text)
+                return str(n.get("id"))
+        res = self._call("note_add", conversation_id=conversation_id, user_id=self.tanya_agent,
+                         name=SUMMARY_NOTE_NAME, message=text)
+        return str(res)
+
     def recent_conversations(self, since_utc):
         res = self._call("new_conversations", datetime=since_utc)
         return res if isinstance(res, list) else []
@@ -191,7 +236,10 @@ class SupportBoardAdapter(CRMAdapter):
         except (TypeError, ValueError):
             return False                                    # no CRM message id (e.g. app_open): nothing to compare
         for m in self.get_conversation(conversation_id, limit=30):
-            if (str(m.get("user_type")) in ("agent", "admin") and str(m.get("user_id")) != self.tanya_agent
+            # a REPLY has words or a file: Support Board's own hidden events (e.g. the empty
+            # "conversation-department-update" message the API user leaves when Tanya hands over) are not replies
+            has_content = bool(str(m.get("message") or "").strip()) or str(m.get("attachments") or "") not in ("", "[]")
+            if (has_content and str(m.get("user_type")) in ("agent", "admin") and str(m.get("user_id")) != self.tanya_agent
                     and int(m.get("id", 0)) > after):
                 return True
         return False

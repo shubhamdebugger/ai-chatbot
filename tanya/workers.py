@@ -62,11 +62,21 @@ class TurnHandler:
             return self._staff(event)
         if self._marked(event, "done"):               # a reclaimed job whose turn was already delivered (PT5)
             return None
+        conv0 = str(event.get("conversation_id") or "")
+        if conv0 and kind == "user_message":          # the PWA shows "typing" only while this is set (06-Oct)
+            self.store.typing_set(conv0, "working", S.get("typing_ttl_seconds", 90))
+        try:
+            return self._turn(event, kind)
+        finally:
+            if conv0:
+                self.store.typing_clear(conv0)
+
+    def _turn(self, event, kind):
         t_start = time.time()
         retry = self._retry_get(event)
         if retry:                                     # earlier post failed: post the saved reply, don't think again
             st, conv = None, retry["conversation_id"]
-            post_failed = self._post_bubbles(conv, retry["bubbles"], event, reconcile=True)[1]
+            suppressed, post_failed = self._post_bubbles(conv, retry["bubbles"], event, reconcile=True)
         else:
             attempts_ms = []
             for attempt in range(3):                  # redo the turn if a newer version was saved meanwhile
@@ -85,14 +95,45 @@ class TurnHandler:
             attempts_ms.append(int((time.time() - ta) * 1000))
             st["attempts_ms"] = attempts_ms
             t_turn = time.time()
-            conv, post_failed = self._deliver(st, event)
+            conv, suppressed, post_failed = self._deliver(st, event)
             self._timing(event, st, t_start, t_turn)
+            if st.get("gate_reason") == "HUMAN_MODE" or suppressed:
+                # the customer now waits for staff: alert the team lead if nobody answers (v4 §7.6)
+                self.store.staff_wait_start(conv, event.get("user_id", ""), tnow())
+            d = st.get("decision")
+            if d and d.action in S.get("handoff_human_actions", ["HAND_OVER_PERSON"]) and not suppressed \
+                    and not post_failed:
+                # Tanya handed the chat to staff: HUMAN mode with a recovery deadline (handoff_recovery.py)
+                from .handoff_recovery import start_handoff
+                start_handoff(self.store, conv, event.get("user_id", ""), d.action, d.reason, tnow(),
+                              last_message_id=event.get("event_id"))
+            if kind == "user_message" and conv:          # conversation summary bookkeeping (summaries.py)
+                self.store.summary_touch(conv, event.get("user_id", ""), time.time(),
+                                         force=bool(d and d.action in S.get("handoff_human_actions", [])))
         if post_failed and self._retry_set(event, conv, post_failed):
             # not acknowledged: the reclaimer retries it, and after the last attempt it goes to the dead letter (PT3)
+            self._outcome(event, "POST_FAILED")
             raise RuntimeError(f"POST_FAILED: {len(post_failed)} bubble(s) not accepted by the CRM")
         self._retry_clear(event)
         self._mark(event, "done")
+        self._outcome(event, self._outcome_of(st, suppressed))
         return st
+
+    @staticmethod
+    def _outcome_of(st, suppressed):
+        """v4 §12 job outcome, recorded per CRM message (orch_inbox.status)."""
+        if suppressed or (st and st.get("gate_reason") == "HUMAN_MODE"):
+            return "SKIPPED_HUMAN"
+        if st and st.get("gate") == "silent":
+            return "SKIPPED_GATE"
+        if st is None or st.get("bubbles"):
+            return "REPLIED"
+        return "NO_REPLY"
+
+    def _outcome(self, event, status):
+        if event.get("event_id"):
+            self.store.emit([{"type": "outcome", "event_id": str(event["event_id"]), "user_id": event.get("user_id"),
+                              "conversation_id": event.get("conversation_id"), "status": status, "at": iso(tnow())}])
 
     def _timing(self, event, st, t_start, t_turn):
         """One line per turn: where the customer's waiting time went (queue, thinking, AI, posting)."""
@@ -136,10 +177,10 @@ class TurnHandler:
         r = getattr(self.store, "r", None)
         return bool(r is not None and event.get("event_id") and r.exists(f"tanya:{what}:{event['event_id']}"))
 
-    def _mark(self, event, what):
+    def _mark(self, event, what, value="1"):
         r = getattr(self.store, "r", None)
         if r is not None and event.get("event_id"):
-            r.set(f"tanya:{what}:{event['event_id']}", "1", ex=86400)
+            r.set(f"tanya:{what}:{event['event_id']}", str(value or "1"), ex=86400)
 
     def _deliver(self, st, event):
         """Post each bubble; if HUMAN mode started meanwhile, post nothing and mark undelivered."""
@@ -152,13 +193,14 @@ class TurnHandler:
         d = st.get("decision")                       # absent when the gate stopped the turn (LangGraph state)
         if d and d.action in HANDOVER_ACTIONS:
             try:
-                self.adapter.write_tanya_brief(st["user_id"], conv, st["brief"])
+                if S.get("crm_lead_brief_note", False):      # off: agents see only the Conversation Summary note
+                    self.adapter.write_tanya_brief(st["user_id"], conv, st["brief"])
                 if d.action in ("HAND_OVER_PERSON", "LOG_GRIEVANCE"):
                     self.adapter.hand_to_human(conv, d.action)
             except Exception as e:
                 self.store.emit([{"type": "alert", "user_id": st["user_id"], "at": iso(tnow()),
                                   "kind": "crm_write_failed", "detail": str(e)[:200]}])
-        return conv, post_failed
+        return conv, suppressed, post_failed
 
     def _post_bubbles(self, conv, bubbles, event, reconcile=False):
         """bubbles = [[index, text], ...]. Returns (texts suppressed for HUMAN mode, [[index, text]] the CRM refused).
@@ -186,8 +228,11 @@ class TurnHandler:
             crm_checked = True
             t1 = time.time()
             try:
-                self.adapter.post_message(conv, text)
-                self._mark(posted, "posted")
+                crm_id = self.adapter.post_message(conv, text)
+                self._mark(posted, "posted", value=crm_id)
+                self.store.emit([{"type": "reply_posted", "user_id": event.get("user_id"), "at": iso(tnow()),
+                                  "source_event_id": event.get("event_id"), "bubble": i, "text": text,
+                                  "crm_message_id": str(crm_id or "")}])
             except Exception:
                 post_failed.append([i, text])
             print(f"[post] event={event.get('event_id')} bubble={i} check_ms={int((t1 - t0) * 1000)} "
@@ -290,10 +335,18 @@ class Persister:
             c.execute("INSERT INTO orch_alerts (user_id,kind,detail,at) VALUES (%s,%s,%s,%s)",
                       (u, f"case_{e.get('kind')}", J(e), at))
         elif t == "callback":
-            c.execute("INSERT INTO orch_callbacks (callback_id,user_id,kind,state,requested_at,when_text,slot,updated_at) "
-                      "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE state=VALUES(state), updated_at=VALUES(updated_at)",
-                      (e["id"], u, e["kind"], e["state"], _dt(e.get("requested_at")), e.get("when_text"),
-                       J(e.get("slot")), at))
+            n = c.execute("INSERT INTO orch_callbacks (callback_id,user_id,kind,state,requested_at,when_text,slot,updated_at,"
+                          "conversation_id,source_message_id,reason,promise,due_at,status) "
+                          "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'pending') ON DUPLICATE KEY UPDATE "
+                          "state=VALUES(state), updated_at=VALUES(updated_at)",
+                          (e["id"], u, e["kind"], e["state"], _dt(e.get("requested_at")), e.get("when_text"),
+                           J(e.get("slot")), at, e.get("conversation_id"), e.get("source_message_id"), e.get("reason"),
+                           e.get("promise"), _dt(e.get("due_at")) if e.get("due_at") else None))
+            if n == 1:                                # a new callback (2 = existing one updated)
+                c.execute("INSERT INTO orch_audit (entity,entity_id,event,actor,detail,at) VALUES "
+                          "('callback',%s,'created','tanya',%s,%s)",
+                          (e["id"], J({"kind": e["kind"], "reason": e.get("reason"), "due_at": e.get("due_at"),
+                                       "conversation_id": e.get("conversation_id")}), at))
         elif t in ("value_card", "session_start", "session_end", "delivery_note"):
             c.execute("INSERT INTO orch_lead_events (user_id,type,detail,at) VALUES (%s,%s,%s,%s)", (u, t, J(e), at))
         elif t == "trace":
@@ -328,6 +381,48 @@ class Persister:
         elif t == "alert":
             c.execute("INSERT INTO orch_alerts (user_id,kind,detail,at) VALUES (%s,%s,%s,%s)",
                       (u, e.get("kind", "alert"), J(e), at))
+        elif t == "outcome":                          # v4 §12 lifecycle: what became of this CRM message
+            c.execute("UPDATE orch_inbox SET status=%s, outcome_at=%s WHERE event_id=%s",
+                      (e["status"], at, e["event_id"]))
+        elif t == "reply_posted":                     # G3: reply -> source message and CRM message id
+            c.execute("UPDATE orch_replies SET source_event_id=%s, crm_message_id=%s WHERE user_id=%s AND text=%s "
+                      "AND crm_message_id IS NULL ORDER BY id DESC LIMIT 1",
+                      (e.get("source_event_id"), e.get("crm_message_id"), u, e.get("text", "")))
+        elif t == "handoff" and e.get("op") == "start":   # Tanya's handoff (handoff_recovery.py)
+            c.execute("INSERT IGNORE INTO orch_handoffs (handoff_id,conversation_id,user_id,action,reason,period,"
+                      "started_at,due_at,status,last_message_id) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'open',%s)",
+                      (e["handoff_id"], e["conversation_id"], u, e.get("action"), e.get("reason"), e.get("period"),
+                       _dt(e.get("started_at")), _dt(e.get("due_at")), e.get("last_message_id") or None))
+        elif t == "handoff":
+            cols = {k: e[k] for k in ("status", "agent_assigned_id", "agent_replied_id", "recovery_message_id")
+                    if k in e}
+            cols.update({k: _dt(e[k]) for k in ("agent_assigned_at", "agent_replied_at", "recovered_at") if e.get(k)})
+            if e.get("agent_id") and "agent_replied_at" in e:
+                cols["agent_replied_id"] = e["agent_id"]
+            if cols:
+                c.execute("UPDATE orch_handoffs SET " + ", ".join(f"{k}=%s" for k in cols) + " WHERE handoff_id=%s",
+                          (*cols.values(), e["handoff_id"]))
+        elif t == "audit":
+            c.execute("INSERT INTO orch_audit (entity,entity_id,event,actor,detail,at) VALUES (%s,%s,%s,%s,%s,%s)",
+                      (e["entity"], e["entity_id"], e["event"], e.get("actor"), J(e.get("detail") or {}), at))
+        elif t == "conv_summary":                     # Conversation Summary (summaries.py) - the durable copy
+            c.execute("INSERT INTO orch_conv_summaries (conversation_id,user_id,summary,msg_count,last_message_id,"
+                      "crm_note_id,model,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE "
+                      "summary=VALUES(summary), msg_count=VALUES(msg_count), last_message_id=VALUES(last_message_id), "
+                      "crm_note_id=VALUES(crm_note_id), model=VALUES(model), updated_at=VALUES(updated_at)",
+                      (e["conversation_id"], u, e["summary"], e.get("msg_count"), e.get("last_message_id"),
+                       e.get("crm_note_id"), e.get("model"), at))
+        elif t == "callback_event":                   # e.g. recovered_by_tanya for the chat's open callbacks
+            c.execute("SELECT callback_id FROM orch_callbacks WHERE conversation_id=%s AND "
+                      "COALESCE(status,'pending') <> 'completed'", (e["conversation_id"],))
+            for (cb_id,) in c.fetchall():
+                if e.get("event") == "recovered_by_tanya":
+                    c.execute("UPDATE orch_callbacks SET recovered_at=%s WHERE callback_id=%s", (at, cb_id))
+                c.execute("INSERT INTO orch_audit (entity,entity_id,event,actor,detail,at) VALUES "
+                          "('callback',%s,%s,'tanya',%s,%s)", (cb_id, e.get("event"), J(e), at))
+        elif t == "dead_letter":                      # v4 §12 point 5 / G7
+            c.execute("INSERT INTO orch_dead_letters (stream,stream_id,body,at) VALUES (%s,%s,%s,%s)",
+                      (e.get("stream", ""), e.get("stream_id", ""), J(e.get("body")), at))
         elif t == "audit":
             c.execute("INSERT INTO orch_compliance_audits (audit_date,user_id,item,lines_text,ai_verdict,model,created_at) "
                       "VALUES (%s,%s,%s,%s,%s,%s,%s)",
@@ -434,10 +529,11 @@ def close_idle_sessions(store, llm, adapter, now=None):
         store.emit([{"type": "session_note", "user_id": uid, "at": iso(now), "text": note},
                     {"type": "brief", "user_id": uid, "at": iso(now), "text": brief},
                     {"type": "session_end", "user_id": uid, "at": iso(now), "session": s["id"]}])
-        try:
-            adapter.write_tanya_brief(uid, rec["conversation_id"], brief)
-        except Exception:
-            pass
+        if S.get("crm_lead_brief_note", False):             # the brief stays in the DB (event 'brief') either way
+            try:
+                adapter.write_tanya_brief(uid, rec["conversation_id"], brief)
+            except Exception:
+                pass
         done += 1
     return done
 
@@ -486,6 +582,85 @@ def reconcile_once(store, adapter, intake, now_utc=None, window_s=600, grace_s=1
     return recovered
 
 
+def staff_silent_check(store, now=None):
+    """v4 §7.6: a customer has waited for staff (HUMAN mode, no staff reply) longer than staff_silent_alert_minutes
+    -> one alert for the team lead (orch_alerts kind staff_silent). Runs in the reconcile loop."""
+    now = now or tnow()
+    limit = S.get("staff_silent_alert_minutes", 5) * 60
+    alerted = []
+    for conv, uid, since in store.staff_waiting_since(now.timestamp() - limit):
+        store.emit([{"type": "alert", "user_id": uid or conv, "at": iso(now), "kind": "staff_silent",
+                     "conversation_id": conv, "waited_s": int(now.timestamp() - since)}])
+        store.staff_wait_end(conv)
+        alerted.append(conv)
+        print(f"[staff-silent] ALERT conv={conv} user={uid} waited_s={int(now.timestamp() - since)}",
+              file=sys.stderr, flush=True)
+    return alerted
+
+
+def dead_letter_handler(store, adapter):
+    """v4 §12 point 5 / G7 — a customer message that failed max_deliveries times: keep it in orch_dead_letters,
+    alert staff, hand the chat to staff (HUMAN) and tell the customer with the approved fixed line FX-05
+    (best effort: if the CRM itself is the failure, the post fails too and the alert remains)."""
+    def on_dead(stream, msg_id, body):
+        try:
+            ev = json.loads(body.get("event", "{}"))
+        except Exception:
+            ev = {}
+        uid, conv = ev.get("user_id") or "-", ev.get("conversation_id")
+        store.emit([{"type": "dead_letter", "user_id": uid, "at": iso(tnow()), "stream": stream, "stream_id": msg_id,
+                     "body": ev},
+                    {"type": "alert", "user_id": uid, "at": iso(tnow()), "kind": "dead_letter",
+                     "conversation_id": conv, "event_id": ev.get("event_id")}])
+        if ev.get("event_id"):
+            store.emit([{"type": "outcome", "event_id": str(ev["event_id"]), "user_id": uid, "conversation_id": conv,
+                         "status": "DEAD", "at": iso(tnow())}])
+        if not conv or ev.get("kind") != "user_message":
+            return
+        store.set_human_flag(conv, S.get("human_mode_release_hours", 12), tnow())
+        try:
+            rec = store.get(uid) if uid != "-" else None
+            lang = ((rec or {}).get("profile") or {}).get("language", "hinglish")
+            adapter.post_message(conv, PACK.fixed("FX-05", lang))
+        except Exception as e:
+            print(f"[dead] FX-05 not posted conv={conv}: {type(e).__name__}", file=sys.stderr, flush=True)
+    return on_dead
+
+
+class Housekeeping:
+    """In the reconcile process: handoff recovery (every run), callback SLA (every 30 s), re-seed open handoffs
+    from MySQL after a Redis loss (every 5 min). MySQL problems never stop the handoff recovery."""
+
+    def __init__(self, store, adapter, intake):
+        self.store, self.adapter, self.intake = store, adapter, intake
+        self.conn, self.last_sla, self.last_seed = None, 0.0, 0.0
+
+    def _db(self):
+        if self.conn is None:
+            self.conn = Persister._connect()
+        else:
+            self.conn.ping(reconnect=True)
+        return self.conn
+
+    def run(self):
+        from .handoff_recovery import recovery_check, reseed_from_db
+        from .callbacks import sla_check
+        recovery_check(self.store, self.adapter, self.intake)
+        now = time.time()
+        try:
+            if now - self.last_seed > S.get("handoff_reseed_seconds", 300):
+                n = reseed_from_db(self.store, self._db())
+                if n:
+                    print(f"[handoff] re-seeded {n} open handoff(s) from MySQL", file=sys.stderr, flush=True)
+                self.last_seed = now
+            if now - self.last_sla > S.get("callback_sla_check_seconds", 30):
+                sla_check(self._db(), self.adapter, tnow())
+                self.last_sla = now
+        except Exception as e:
+            print(f"[housekeeping] MySQL step failed {type(e).__name__}: {str(e)[:150]}", file=sys.stderr, flush=True)
+            self.conn = None
+
+
 def forever(step, name, pause=0.0):
     """Run step() forever. A Redis/network/CRM error is logged and retried with back-off instead of killing the
     process (a dead worker silently stops replies until something restarts it)."""
@@ -511,20 +686,24 @@ def main(argv):
         a, b = (argv[2] if len(argv) > 2 else f"0-{S.get('stream_partitions', 8) - 1}").split("-")
         parts = list(range(int(a), int(b) + 1))
         handler = TurnHandler(store, llm, KnowledgeIndex(), adapter, seed_server_factory(store, adapter))
-        StreamWorker(store.r, parts, handler).run_forever()
+        StreamWorker(store.r, parts, handler, on_dead=dead_letter_handler(store, adapter)).run_forever()
     elif cmd == "persist":
         p = Persister()
         StreamWorker(store.r, [], lambda ev: p.write([ev]), group="persister", streams=["tanya:persist"]).run_forever()
     elif cmd == "loader":
         forever(lambda: run_loader(store, adapter), "loader")
     elif cmd == "sessions":
-        forever(lambda: close_idle_sessions(store, llm, adapter), "sessions", pause=60)
+        from .summaries import summarize_due
+        forever(lambda: (close_idle_sessions(store, llm, adapter), summarize_due(store, llm, adapter)), "sessions",
+                pause=S.get("summary_check_seconds", 30))
     elif cmd == "reconcile":
         from .streams import Intake
         intake = Intake(store.r)
         every = float(S.env("RECONCILE_EVERY_SECONDS", "15"))
         print(f"[reconcile] started: every {every:g} s, window 10 min", file=sys.stderr, flush=True)
-        forever(lambda: reconcile_once(store, adapter, intake), "reconcile", pause=every)
+        housekeeping = Housekeeping(store, adapter, intake)
+        forever(lambda: (reconcile_once(store, adapter, intake), staff_silent_check(store), housekeeping.run()),
+                "reconcile", pause=every)
     elif cmd == "persist-file":
         print(persist_file(), "events written")
     else:

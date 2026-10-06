@@ -14,8 +14,11 @@ CREATE TABLE IF NOT EXISTS orch_inbox (            -- every customer message, wo
   msg_no INT NOT NULL,
   text MEDIUMTEXT NOT NULL,
   received_at DATETIME NOT NULL,
+  status VARCHAR(20) NULL,                         -- outcome: REPLIED / SKIPPED_HUMAN / SKIPPED_GATE / NO_REPLY / POST_FAILED / DEAD
+  outcome_at DATETIME NULL,
   UNIQUE KEY uq_inbox (user_id, msg_no),
-  KEY k_inbox_time (received_at)
+  KEY k_inbox_time (received_at),
+  KEY k_inbox_event (event_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS orch_replies (          -- every message Ms Tanya sent, with its line id and action
@@ -27,6 +30,8 @@ CREATE TABLE IF NOT EXISTS orch_replies (          -- every message Ms Tanya sen
   text MEDIUMTEXT NOT NULL,
   delivered TINYINT NOT NULL DEFAULT 1,            -- 0 = never reached him → never remembered as said
   sent_at DATETIME NOT NULL,
+  source_event_id VARCHAR(64) NULL,                -- the CRM message this reply answers
+  crm_message_id VARCHAR(32) NULL,                 -- id the CRM gave the posted reply (reconciliation, G3)
   UNIQUE KEY uq_replies (user_id, msg_no),
   KEY k_replies_time (sent_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -144,14 +149,27 @@ CREATE TABLE IF NOT EXISTS orch_ai_notes (         -- master copy of Ms Tanya's 
 CREATE TABLE IF NOT EXISTS orch_callbacks (        -- requested → booked → completed (or escalated)
   callback_id VARCHAR(80) PRIMARY KEY,
   user_id VARCHAR(64) NOT NULL,
-  kind VARCHAR(20) NOT NULL,                       -- person | purchase | call_preference
+  conversation_id VARCHAR(64) NULL,
+  source_message_id VARCHAR(32) NULL,
+  kind VARCHAR(30) NOT NULL,                       -- person | purchase | call_preference | team_followup | ...
+  reason VARCHAR(30) NULL,
+  promise MEDIUMTEXT NULL,                         -- Tanya's exact words
   state VARCHAR(20) NOT NULL,
+  status VARCHAR(20) NULL,                         -- pending / assigned / in_progress / overdue / completed (SLA)
+  assigned_agent_id VARCHAR(32) NULL,
   requested_at DATETIME NOT NULL,
+  due_at DATETIME NULL,
   when_text VARCHAR(120) NULL,
   slot MEDIUMTEXT NULL,
   outcome VARCHAR(40) NULL,                        -- agent outcome code (Architecture §13.19)
   updated_at DATETIME NOT NULL,
-  KEY k_cb_state (state, requested_at)
+  completed_at DATETIME NULL,
+  completed_by VARCHAR(64) NULL,
+  recovered_at DATETIME NULL,
+  overdue_notified_at DATETIME NULL,
+  KEY k_cb_state (state, requested_at),
+  KEY k_cb_status (status, due_at),
+  KEY k_cb_conv (conversation_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS orch_reply_trace (      -- the full trace of every turn (labels, action, guard, cost)
@@ -183,4 +201,48 @@ CREATE TABLE IF NOT EXISTS orch_compliance_audits (  -- morning audit: item, exa
   model VARCHAR(60) NULL,
   created_at DATETIME NOT NULL,
   KEY k_audit_date (audit_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------------------------------------------------------- 06-Oct-2026: handoff recovery, summaries, audit
+CREATE TABLE IF NOT EXISTS orch_handoffs (          -- every time Tanya hands a chat to staff, and how it ended
+  handoff_id VARCHAR(64) PRIMARY KEY,                -- HO-<conversation>-<epoch>
+  conversation_id VARCHAR(64) NOT NULL,
+  user_id VARCHAR(64) NOT NULL,
+  action VARCHAR(40) NULL,                           -- HAND_OVER_PERSON / LOG_GRIEVANCE
+  reason VARCHAR(40) NULL,                           -- decider reason code (R04, R06, R06-FAILED, R03 ...)
+  period VARCHAR(8) NULL,                            -- day (10 min) / night (12 h)
+  started_at DATETIME NOT NULL,
+  due_at DATETIME NOT NULL,                          -- recovery deadline
+  status VARCHAR(20) NOT NULL DEFAULT 'open',        -- open / agent_replied / recovered / released
+  last_message_id VARCHAR(32) NULL,                  -- customer message that triggered the handoff
+  agent_assigned_id VARCHAR(32) NULL,
+  agent_assigned_at DATETIME NULL,
+  agent_replied_id VARCHAR(32) NULL,
+  agent_replied_at DATETIME NULL,
+  recovered_at DATETIME NULL,
+  recovery_message_id VARCHAR(32) NULL,              -- CRM id of FX-32 / FX-33
+  KEY k_handoff_open (status, due_at),
+  KEY k_handoff_conv (conversation_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS orch_audit (             -- audit trail: handoffs and callbacks
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  entity VARCHAR(20) NOT NULL,                       -- handoff / callback
+  entity_id VARCHAR(80) NOT NULL,
+  event VARCHAR(40) NOT NULL,                        -- created, assigned, reassigned, status:*, completed, recovered_by_tanya ...
+  actor VARCHAR(64) NULL,
+  detail MEDIUMTEXT NULL,
+  at DATETIME NOT NULL,
+  KEY k_audit_entity (entity, entity_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS orch_conv_summaries (    -- Conversation Summary shown in the CRM notes (one per chat)
+  conversation_id VARCHAR(64) PRIMARY KEY,
+  user_id VARCHAR(64) NOT NULL,
+  summary MEDIUMTEXT NOT NULL,
+  msg_count INT NULL,
+  last_message_id VARCHAR(32) NULL,
+  crm_note_id VARCHAR(32) NULL,
+  model VARCHAR(60) NULL,
+  updated_at DATETIME NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

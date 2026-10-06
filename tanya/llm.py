@@ -36,9 +36,54 @@ class LLMResult:
 
 
 # One keep-alive connection pool per process (Spec 3.1 F5): no new TLS handshake per call.
-HTTP = httpx.Client(limits=httpx.Limits(max_connections=20, max_keepalive_connections=10), timeout=60)
+# keepalive_expiry: customers are usually idle longer than httpx's default 5 s between messages, so every turn
+# paid a new TLS handshake per AI call; 120 s keeps the connection warm across a normal conversation.
+HTTP = httpx.Client(limits=httpx.Limits(max_connections=20, max_keepalive_connections=10, keepalive_expiry=120),
+                    timeout=60)
+
+# Circuit breaker for ACCOUNT-level refusals (no credit, bad key, no permission). Such an answer will not change
+# in the next seconds, yet every call used to try that provider first: on 05-Oct the Anthropic account ran out of
+# credit and each of the 3 calls per reply first got a refusal (0.4-1.4 s) before the fallback answered. The
+# provider is skipped for BREAKER_SECONDS, then tried again (it recovers by itself once the account is fixed).
+BREAKER_SECONDS = 300
+_DOWN = {}                      # provider -> (until_epoch, reason)
+_ACCOUNT_ERRORS = ("credit balance", "billing", "authentication_error", "permission_error", "invalid x-api-key",
+                   "insufficient_quota", "invalid_api_key", "account is not active")
+
+
+def _account_error(e) -> str:
+    """The provider refused the ACCOUNT (not this request, not a busy moment): return a short reason, else ''."""
+    status = getattr(getattr(e, "response", None), "status_code", None)
+    text = str(e).lower()
+    try:
+        text += " " + e.response.text.lower()
+    except Exception:
+        pass
+    if status in (401, 403) or (status in (400, 402, 429) and any(k in text for k in _ACCOUNT_ERRORS)):
+        return next((k for k in _ACCOUNT_ERRORS if k in text), f"HTTP {status}")
+    return ""
+
+
+def provider_down(provider) -> str:
+    until, reason = _DOWN.get(provider, (0, ""))
+    return reason if until > time.time() else ""
 
 _RID = threading.local()
+_PURPOSE = threading.local()        # which AI job is calling (understand / reply / check / ...)
+
+# OpenAI reasoning models (GPT-6 Luna / Sol) think before answering; their default effort is "medium", which made a
+# Luna turn take 12-13 s (Spec Draft 3.1 §9.1 item 1). Measured 05-Oct on one reply prompt: default 4.3-5.4 s,
+# low 3.2-5.1 s, none 2.0-2.2 s. Per job, overridable in .env: OPENAI_REASONING_EFFORT_<JOB> or
+# OPENAI_REASONING_EFFORT. Spec C19 sets "low" for the compliance check; understand/reply use "none" for speed —
+# confirm with the per-job accuracy set (Spec §9.1 item 4) before go-live.
+REASONING_DEFAULTS = {"understand": "none", "reply": "none", "check": "low"}
+_NO_REASONING = set()               # models that rejected reasoning_effort once — never sent again
+
+
+def reasoning_effort(purpose):
+    return (S.env(f"OPENAI_REASONING_EFFORT_{(purpose or '').upper()}", "")
+            or S.env("OPENAI_REASONING_EFFORT", "")
+            or REASONING_DEFAULTS.get(purpose, "low")).lower()
 
 
 def _remember(r):
@@ -108,6 +153,8 @@ def _anthropic(model, system, messages, temperature, max_tokens, json_mode, time
         body.pop("temperature")
         r = HTTP.post("https://api.anthropic.com/v1/messages", headers=headers, json=body, timeout=timeout)
     _remember(r)
+    if r.status_code == 400:                   # say WHY the request was refused (was: a bare "400 Bad Request")
+        raise httpx.HTTPStatusError(f"400 from Anthropic: {r.text[:300]}", request=r.request, response=r)
     r.raise_for_status()
     j = r.json()
     text = "".join(b.get("text", "") for b in j.get("content", []) if b.get("type") == "text")
@@ -120,8 +167,15 @@ def _openai(model, system, messages, temperature, max_tokens, json_mode, timeout
             "max_completion_tokens": max_tokens, "temperature": temperature}
     if json_mode:
         body["response_format"] = {"type": "json_object"}
+    effort = reasoning_effort(getattr(_PURPOSE, "value", ""))
+    if effort and effort != "default" and model not in _NO_REASONING:
+        body["reasoning_effort"] = effort
     headers = {"Authorization": f"Bearer {S.api_key('openai')}", "content-type": "application/json"}
     r = HTTP.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body, timeout=timeout)
+    if r.status_code == 400 and "reasoning_effort" in r.text and "reasoning_effort" in body:
+        _NO_REASONING.add(model)               # not a reasoning model: send without it from now on
+        body.pop("reasoning_effort")
+        r = HTTP.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body, timeout=timeout)
     if r.status_code == 400 and "temperature" in r.text:
         body.pop("temperature", None)          # some models accept only their default temperature
         r = HTTP.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body, timeout=timeout)
@@ -173,7 +227,64 @@ def _log(res):
     """One line per model call in the process log: proof of which provider really answered."""
     print(f"[llm] {res.purpose} provider={res.provider} model={res.model} ok={res.ok} ms={res.ms} "
           f"tokens={res.input_tokens}/{res.output_tokens} request_id={res.request_id or '-'}"
-          + (f" error={res.error[:120]}" if res.error else ""), file=sys.stderr, flush=True)
+          + (f" error={res.error[:400]}" if res.error else ""), file=sys.stderr, flush=True)
+
+
+# ---------------------------------------------------------------- hedged requests (06-Oct-2026, Feature 6)
+# Measured 06-Oct (OpenAI gpt-6-luna): most understand / reply / check calls answer in ~2-3 s, but about one in ten
+# takes 6-11 s (provider-side). The customer waits for three calls in a row, so one slow call made a 20-30 s reply.
+# Hedge: if the first request has not answered after llm_hedge_after_seconds[purpose], the SAME request is sent once
+# more and the first answer to arrive is used. Cost: one extra small request only in those slow cases (the unused
+# answer's tokens are not counted in cost_inr). Off: LLM_HEDGE=0 in .env, or remove the purpose from the config.
+_HEDGE_POOL = None
+_HEDGE_LOCK = threading.Lock()
+
+
+def _hedge_after(purpose):
+    if S.env("LLM_HEDGE", "1") == "0":
+        return None
+    v = (S.get("llm_hedge_after_seconds", {}) or {}).get(purpose)
+    return float(v) if v else None
+
+
+def _provider_call(provider, purpose, args, kwargs):
+    """Runs in a pool thread: thread-locals (purpose -> reasoning effort, request id) are this thread's own."""
+    _PURPOSE.value = purpose
+    _RID.value = ""
+    out = _PROVIDERS[provider](*args, **kwargs)
+    return out, getattr(_RID, "value", "")
+
+
+def _call_provider(provider, purpose, *args, **kwargs):
+    """One provider request, hedged when the purpose has a hedge delay. Returns (text, tokens_in, tokens_out)."""
+    global _HEDGE_POOL
+    after = _hedge_after(purpose)
+    if not after or provider == "mock":
+        return _PROVIDERS[provider](*args, **kwargs)
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+    with _HEDGE_LOCK:
+        if _HEDGE_POOL is None:
+            _HEDGE_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="llm-hedge")
+    first = _HEDGE_POOL.submit(_provider_call, provider, purpose, args, kwargs)
+    done, _ = wait([first], timeout=after)
+    futures = [first]
+    if not done:
+        print(f"[llm] hedge {purpose}: no answer after {after}s, second request sent", file=sys.stderr, flush=True)
+        futures.append(_HEDGE_POOL.submit(_provider_call, provider, purpose, args, kwargs))
+    pending, error = set(futures), None
+    while pending:
+        done, pending = wait(pending, return_when=FIRST_COMPLETED)
+        for f in done:
+            try:
+                out, rid = f.result()
+            except Exception as e:            # this copy failed: use the other one if it is still running
+                error = error or e
+                continue
+            _RID.value = rid
+            if len(futures) > 1:
+                print(f"[llm] hedge {purpose}: answered by request {futures.index(f) + 1}", file=sys.stderr, flush=True)
+            return out
+    raise error
 
 
 class LLM:
@@ -194,16 +305,23 @@ class LLM:
             for model in (S.model(provider, tier), S.raw["models"][provider].get("backup")):
                 if model and (provider, model) not in attempts:
                     attempts.append((provider, model))
+        # Skip a provider whose account was refused recently — unless that would leave nothing to try.
+        live = [a for a in attempts if not provider_down(a[0])]
+        if live and len(live) < len(attempts):
+            attempts = live
         last = LLMResult(False, purpose=purpose, error="no provider tried")
         spent = 0.0                                    # cost of answers we could not use
         for provider, model in attempts:
+            if provider_down(provider) and (provider, model) != attempts[-1]:
+                continue                               # refused a moment ago: go straight to the next provider
             for attempt in range(2):
                 t0 = time.time()
                 _RID.value = ""
+                _PURPOSE.value = purpose
                 try:
-                    text, tin, tout = _PROVIDERS[provider](model, system, normalise_messages(messages),
-                                                           temperature, max_tokens, json_mode, timeout,
-                                                           schema=schema if json_mode else None)
+                    text, tin, tout = _call_provider(provider, purpose, model, system, normalise_messages(messages),
+                                                     temperature, max_tokens, json_mode, timeout,
+                                                     schema=schema if json_mode else None)
                     p_in, p_out = S.price(model)
                     cost = (tin * p_in + tout * p_out) / 1_000_000 * self.usd_inr
                     res = LLMResult(True, text, provider, model, purpose, tin, tout,
@@ -221,9 +339,17 @@ class LLM:
                     return res
                 except Exception as e:  # network, timeout, HTTP error — retry if busy, else next attempt
                     last = LLMResult(False, "", provider, model, purpose, ms=int((time.time() - t0) * 1000),
-                                     cost_inr=round(spent, 4), error=f"{type(e).__name__}: {str(e)[:200]}",
+                                     cost_inr=round(spent, 4), error=f"{type(e).__name__}: {str(e)[:400]}",
                                      request_id=getattr(_RID, "value", ""))
                     _log(last)
+                    reason = _account_error(e)
+                    if reason:
+                        if not provider_down(provider):
+                            print(f"[llm] BREAKER {provider} skipped for {BREAKER_SECONDS}s: account refused "
+                                  f"({reason}) — fix the {provider} account; fallback answers meanwhile",
+                                  file=sys.stderr, flush=True)
+                        _DOWN[provider] = (time.time() + BREAKER_SECONDS, reason)
+                        break
                     status = getattr(getattr(e, "response", None), "status_code", None)
                     busy = status in (429, 500, 502, 503, 504) or isinstance(e, httpx.TimeoutException)
                     if not busy or attempt:
