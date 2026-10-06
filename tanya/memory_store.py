@@ -19,6 +19,11 @@ Redis keys (production):
   tanya:loadq                list of user IDs whose picture the loader must fill (cold start)
   tanya:in:{0..7}            intake streams, partitioned per customer (streams.py)
   tanya:seen:{event_id}      duplicate guard for webhook events (streams.py)
+  tanya:tokens:{user_id}     this lead's AI token counter (INCRBY; reset by lead_token_budget_reset)
+  tanya:tokens:day:{user_id} the day the token counter was last reset (only when reset = daily)
+  tanya:windup:{user_id}     SET NX — the 70% wind-up alert has fired for this lead
+  tanya:windup_plan:{user_id} JSON wind-up plan (recap / open_doubt / wrapup_queries / used)
+  tanya:alerts               stream of alerts (windup_70), read by the alerts worker (workers.py)
 """
 import json
 import threading
@@ -84,6 +89,57 @@ class FileStore:
 
     def ledger_get(self, now) -> float:
         return self.db["ledger"].get(day_key(now), 0.0)
+
+    # ---- per-lead token budget + wind-up (AI-C19 for one lead) ----
+    def _tokens_reset(self, user_id, now):
+        """lead_token_budget_reset = 'daily' → counter, wind-up flag and plan reset at 00:00 IST."""
+        if S.get("lead_token_budget_reset", "never") != "daily":
+            return
+        day = day_key(now)
+        days = self.db.setdefault("tokens_day", {})
+        if days.get(user_id) == day:
+            return
+        days[user_id] = day
+        self.db.setdefault("tokens", {}).pop(user_id, None)
+        self.db.setdefault("windup", {}).pop(user_id, None)
+        self.db.setdefault("windup_plan", {}).pop(user_id, None)
+
+    def tokens_add(self, user_id, n, now) -> int:
+        with self.lock:
+            self._tokens_reset(user_id, now)
+            t = self.db.setdefault("tokens", {})
+            t[user_id] = t.get(user_id, 0) + int(n)
+            self._flush()
+            return t[user_id]
+
+    def tokens_get(self, user_id, now) -> int:
+        with self.lock:
+            self._tokens_reset(user_id, now)
+            return self.db.get("tokens", {}).get(user_id, 0)
+
+    def windup_mark(self, user_id) -> bool:
+        """SET NX — True only the first time, so the 70% alert fires exactly once per lead."""
+        with self.lock:
+            w = self.db.setdefault("windup", {})
+            if user_id in w:
+                return False
+            w[user_id] = "1"
+            self._flush()
+            return True
+
+    def alerts_push(self, fields: dict):
+        with self.lock:
+            self.db.setdefault("alerts", []).append(fields)
+            self._flush()
+
+    def windup_plan_save(self, user_id, plan: dict):
+        with self.lock:
+            self.db.setdefault("windup_plan", {})[user_id] = plan
+            self._flush()
+
+    def windup_plan_get(self, user_id):
+        plan = self.db.get("windup_plan", {}).get(user_id)
+        return json.loads(json.dumps(plan)) if plan else None
 
     def next_case_no(self, now) -> str:
         with self.lock:
@@ -173,6 +229,39 @@ class RedisStore:
 
     def ledger_get(self, now) -> float:
         return float(self.r.get(f"tanya:ledger:{day_key(now)}") or 0.0)
+
+    # ---- per-lead token budget + wind-up (AI-C19 for one lead) ----
+    def _tokens_reset(self, user_id, now):
+        """lead_token_budget_reset = 'daily' → counter, wind-up flag and plan reset at 00:00 IST."""
+        if S.get("lead_token_budget_reset", "never") != "daily":
+            return
+        day = day_key(now)
+        if self.r.get(f"tanya:tokens:day:{user_id}") == day:
+            return
+        self.r.set(f"tanya:tokens:day:{user_id}", day)
+        self.r.delete(f"tanya:tokens:{user_id}", f"tanya:windup:{user_id}", f"tanya:windup_plan:{user_id}")
+
+    def tokens_add(self, user_id, n, now) -> int:
+        self._tokens_reset(user_id, now)
+        return int(self.r.incrby(f"tanya:tokens:{user_id}", int(n)))
+
+    def tokens_get(self, user_id, now) -> int:
+        self._tokens_reset(user_id, now)
+        return int(self.r.get(f"tanya:tokens:{user_id}") or 0)
+
+    def windup_mark(self, user_id) -> bool:
+        """SET NX — True only the first time, so the 70% alert fires exactly once per lead."""
+        return bool(self.r.set(f"tanya:windup:{user_id}", "1", nx=True))
+
+    def alerts_push(self, fields: dict):
+        self.r.xadd("tanya:alerts", {k: str(v) for k, v in fields.items()}, maxlen=10_000, approximate=True)
+
+    def windup_plan_save(self, user_id, plan: dict):
+        self.r.set(f"tanya:windup_plan:{user_id}", json.dumps(plan, ensure_ascii=False))
+
+    def windup_plan_get(self, user_id):
+        raw = self.r.get(f"tanya:windup_plan:{user_id}")
+        return json.loads(raw) if raw else None
 
     def next_case_no(self, now) -> str:
         d = day_key(now)

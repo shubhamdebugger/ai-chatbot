@@ -1,9 +1,9 @@
 """The turn as a graph — LangGraph when installed (Backbone: 'LangGraph for bounded workflows'),
 or the same steps in a plain loop.
 
-Plain English: the eight steps of turn.py are the 'nodes'. The only branch is after
-the gate: go on to understand, jump to compose for a fixed line, or stop (silent).
-Code decides every branch — the AI never picks the path. USE_LANGGRAPH=0 in .env
+Plain English: the steps of turn.py are the 'nodes'. The only branch is after
+the gate: go on to understand (+ budget_check, the 70% wind-up), jump to compose for a fixed
+line, or stop (silent). Code decides every branch — the AI never picks the path. USE_LANGGRAPH=0 in .env
 forces the plain loop; both give the same result (tests check this).
 """
 from typing import Any, TypedDict
@@ -11,8 +11,9 @@ from typing import Any, TypedDict
 from . import turn
 from .settings import S
 
-ORDER = ["load", "gate", "understand", "decide", "retrieve", "compose", "guard", "after"]
-NODES = {"load": turn.n_load, "gate": turn.n_gate, "understand": turn.n_understand, "decide": turn.n_decide,
+ORDER = ["load", "gate", "understand", "budget_check", "decide", "retrieve", "compose", "guard", "after"]
+NODES = {"load": turn.n_load, "gate": turn.n_gate, "understand": turn.n_understand,
+         "budget_check": turn.n_budget_check, "decide": turn.n_decide,
          "retrieve": turn.n_retrieve, "compose": turn.n_compose, "guard": turn.n_guard, "after": turn.n_after}
 
 
@@ -39,6 +40,8 @@ class TurnState(TypedDict, total=False):
     gate_reason: str
     smalltalk: str
     limited: bool
+    budget_no_ai: bool
+    windup_query: str
     labels: dict
     decision: Any
     hits: list
@@ -68,7 +71,8 @@ def _langgraph_app():
     g.add_edge("load", "gate")
     g.add_conditional_edges("gate", turn.route_after_gate,
                             {"understand": "understand", "compose": "compose", "after": "after"})
-    g.add_edge("understand", "decide")
+    g.add_edge("understand", "budget_check")
+    g.add_edge("budget_check", "decide")
     g.add_edge("decide", "retrieve")
     g.add_edge("retrieve", "compose")
     g.add_edge("compose", "guard")
@@ -86,7 +90,7 @@ def run_plain(state):
     state = NODES["gate"](state)
     nxt = turn.route_after_gate(state)
     if nxt == "understand":
-        for n in ("understand", "decide", "retrieve", "compose", "guard"):
+        for n in ("understand", "budget_check", "decide", "retrieve", "compose", "guard"):
             state = NODES[n](state)
     elif nxt == "compose":
         for n in ("compose", "guard"):

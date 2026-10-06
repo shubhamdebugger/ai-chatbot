@@ -6,7 +6,8 @@ Plain English:
 - persist   : copies memory events from Redis into the MySQL orch_ tables (one way, seconds behind).
 - loader    : fills a customer's picture from the CRM BEFORE he needs it (cold start, app-open, nightly).
 - sessions  : closes sessions after 30 min silence → session note (AI) + Lead Brief to the CRM.
-Run:  python -m tanya.workers turn 0-7 | persist | loader | sessions
+- alerts    : reads tanya:alerts (e.g. a lead's 70% wind-up) and logs it; CRM push comes later.
+Run:  python -m tanya.workers turn 0-7 | persist | loader | sessions | alerts
 
 PLUMBING OWNERS: JUNIOR B (turn, persist), CODER D (loader mapping, CRM brief), JUNIOR C (sessions).
 """
@@ -322,6 +323,28 @@ def close_idle_sessions(store, llm, adapter, now=None):
     return done
 
 
+# ------------------------------------------------------------------ alerts (tanya:alerts)
+def log_alert(fields: dict):
+    """One line per alert — the CRM push comes later."""
+    print(f"[alert] {json.dumps(fields, ensure_ascii=False)}", flush=True)
+
+
+def run_alerts(store):
+    """Reads tanya:alerts with a consumer group and logs every alert (windup_70 ...)."""
+    r, group = store.r, "tanya-alerts"
+    try:
+        r.xgroup_create("tanya:alerts", group, id="0", mkstream=True)
+    except Exception as e:                          # BUSYGROUP = already exists
+        if "BUSYGROUP" not in str(e):
+            raise
+    while True:
+        resp = r.xreadgroup(group, f"{group}-1", {"tanya:alerts": ">"}, count=10, block=2000)
+        for _stream, msgs in resp or []:
+            for msg_id, fields in msgs:
+                log_alert(fields)
+                r.xack("tanya:alerts", group, msg_id)
+
+
 # ------------------------------------------------------------------ command line
 def main(argv):
     from .streams import GROUP, StreamWorker
@@ -341,6 +364,8 @@ def main(argv):
         while True:
             close_idle_sessions(store, llm, adapter)
             time.sleep(60)
+    elif cmd == "alerts":
+        run_alerts(store)
     elif cmd == "persist-file":
         print(persist_file(), "events written")
     else:

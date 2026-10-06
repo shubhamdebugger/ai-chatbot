@@ -32,7 +32,8 @@ from tanya.knowledge import KnowledgeIndex                    # noqa: E402
 from tanya.llm import LLM                                     # noqa: E402
 from tanya.memory_store import FileStore                      # noqa: E402
 from tanya.scoring import temperature                         # noqa: E402
-from tanya.understand import defaults                         # noqa: E402
+from tanya.settings import S                                 # noqa: E402
+from tanya.understand import defaults                        # noqa: E402
 from tanya import graph                                       # noqa: E402
 
 RESULTS = []
@@ -71,11 +72,23 @@ def rec_for(uid="U1001", now=NIGHT):
     return r
 
 
-def turn(store, uid, text, now=NIGHT, kind="message", use_lg="1"):
+def turn(store, uid, text, now=NIGHT, kind="message", use_lg="1", llm=LLMX):
     os.environ["USE_LANGGRAPH"] = use_lg
     timeutil.set_clock(now)
     return graph.run_turn({"user_id": uid, "kind": kind, "text": text, "now": now, "store": store,
-                           "llm": LLMX, "kb": KB, "seed_fn": lambda u: PACK.test_users.get(u)})
+                           "llm": llm, "kb": KB, "seed_fn": lambda u: PACK.test_users.get(u)})
+
+
+class TokenLLM:
+    """The mock provider, but every successful call reports `per` tokens (the mock itself reports 0)."""
+    def __init__(self, per=500):
+        self.per = per
+
+    def call(self, *a, **kw):
+        res = LLMX.call(*a, **kw)
+        if res.ok:
+            res.total_tokens = self.per
+        return res
 
 
 # ---------------------------------------------------------------- input guard
@@ -464,6 +477,152 @@ if os.environ.get("REDIS_URL"):
         w.run_once(block_ms=500)
         assert got and got[0]["event_id"] == "e1"
         assert r.xlen("tanya:persist") > 0
+
+# ---------------------------------------------------------------- per-lead token budget + wind-up
+@test
+def tokens_are_added_after_an_ai_call():
+    s = fresh_store()
+    st = turn(s, "U1001", "Stop-loss kya hota hai?", llm=TokenLLM(per=700))
+    assert st["llm_calls"], st["llm_calls"]
+    assert s.tokens_get("U1001", NIGHT) == sum(c["tokens"] for c in st["llm_calls"]) > 0
+
+
+@test
+def windup_alert_fires_exactly_once():
+    s = fresh_store()
+    llm = TokenLLM(per=500)
+    s.tokens_add("U1001", 34000, NIGHT)                      # just under the 70% trigger (35000)
+    turn(s, "U1001", "Stop-loss kya hota hai?", llm=llm)     # 35500 → now over it
+    for i in range(4):
+        turn(s, "U1001", "Risk management samjhao", now=NIGHT + timedelta(minutes=1 + i), llm=llm)
+    assert len(s.db["alerts"]) == 1, s.db["alerts"]
+    a = s.db["alerts"][0]
+    assert a["lead_id"] == "U1001" and a["type"] == "windup_70", a
+    assert a["budget"] == S.get("lead_token_budget") and a["timestamp"], a
+
+
+@test
+def windup_plan_saved_and_one_query_per_turn():
+    s = fresh_store()
+    llm = TokenLLM(per=500)
+    s.tokens_add("U1001", 34000, NIGHT)
+    turn(s, "U1001", "Stop-loss kya hota hai?", llm=llm)             # 35500 → not due yet
+    assert s.windup_plan_get("U1001") is None, s.windup_plan_get("U1001")
+    st = turn(s, "U1001", "Risk management samjhao", now=NIGHT + timedelta(minutes=1), llm=llm)
+    plan = s.windup_plan_get("U1001")
+    assert plan and len(plan["wrapup_queries"]) == 3 and not plan.get("fallback"), plan
+    assert plan["used"] == 1, plan                                    # counted only because the reply went out
+    assert st.get("windup_query") == plan["wrapup_queries"][0], st.get("windup_query")
+    assert any(c["purpose"] == "windup" for c in st["llm_calls"]), st["llm_calls"]
+    st = turn(s, "U1001", "Position sizing kya hai", now=NIGHT + timedelta(minutes=2), llm=llm)
+    plan = s.windup_plan_get("U1001")
+    assert plan["used"] == 2 and st.get("windup_query") == plan["wrapup_queries"][1], plan
+    st = turn(s, "U1001", "Overtrading kya hai", now=NIGHT + timedelta(minutes=3), llm=llm)
+    plan = s.windup_plan_get("U1001")
+    assert plan["used"] == 3 and st.get("windup_query") == plan["wrapup_queries"][2], plan
+    st = turn(s, "U1001", "Expiry kaise kaam karti hai", now=NIGHT + timedelta(minutes=4), llm=llm)
+    assert not st.get("windup_query") and s.windup_plan_get("U1001")["used"] == 3   # all used → recap only
+
+
+@test
+def at_full_budget_no_ai_call_and_closing_line():
+    s = fresh_store()
+    s.tokens_add("U1001", 50000, NIGHT)
+    st = turn(s, "U1001", "Stop-loss kya hota hai?")
+    assert st["llm_calls"] == [], st["llm_calls"]
+    assert st["trace"]["gate"] == "R01-TOKENS", st["trace"]
+    assert [b["id"] for b in st["bubbles"]] == ["FX-01", "FX-32"], st["bubbles"]
+    st = turn(s, "U1001", "Risk kya hota hai", now=NIGHT + timedelta(minutes=1))
+    assert st["llm_calls"] == [], st["llm_calls"]
+    assert [b["id"] for b in st["bubbles"]] == ["FX-34"], st["bubbles"]     # shorter line the second time
+
+
+@test
+def exception_lead_at_full_budget_gets_handoff_no_ai():
+    s = fresh_store()
+    s.tokens_add("U1001", 50000, NIGHT)
+    st = turn(s, "U1001", "Refund chahiye, mera payment fail ho gaya")
+    assert st["llm_calls"] == [], st["llm_calls"]
+    assert st["trace"]["action"] == "LOG_GRIEVANCE", st["trace"]
+    assert "FX-10" in [b["id"] for b in st["bubbles"]], st["bubbles"]
+    s2 = fresh_store()
+    s2.tokens_add("U1002", 50000, NIGHT)
+    st = turn(s2, "U1002", "Join karna hai, fees kitni hai?")
+    assert st["llm_calls"] == [], st["llm_calls"]
+    assert st["trace"]["action"] == "HAND_OVER_PURCHASE", st["trace"]
+    assert "FX-14" in [b["id"] for b in st["bubbles"]], st["bubbles"]
+
+
+@test
+def buying_intent_skips_the_windup():
+    s = fresh_store()
+    llm = TokenLLM(per=500)
+    s.tokens_add("U1001", 34000, NIGHT)
+    turn(s, "U1001", "Stop-loss kya hota hai?", llm=llm)                 # 35500 → due next turn
+    st = turn(s, "U1001", "Plan lena hai, fees kitni hai?", now=NIGHT + timedelta(minutes=1), llm=llm)
+    assert len(s.db["alerts"]) == 1, s.db["alerts"]                 # the alert still fires
+    assert s.windup_plan_get("U1001") is None                            # but no wind-up queries
+    assert not any(c["purpose"] == "windup" for c in st["llm_calls"]), st["llm_calls"]
+    assert st["trace"]["action"] == "HAND_OVER_PURCHASE", st["trace"]
+
+
+@test
+def normal_trading_words_do_not_skip_the_windup():
+    s = fresh_store()
+    llm = TokenLLM(per=500)
+    s.tokens_add("U1001", 34000, NIGHT)
+    turn(s, "U1001", "Stop-loss kya hota hai?", llm=llm)
+    turn(s, "U1001", "Mere plan ke liye SL ka problem samjhao", now=NIGHT + timedelta(minutes=1), llm=llm)
+    plan = s.windup_plan_get("U1001")
+    assert len(s.db["alerts"]) == 1, s.db["alerts"]
+    assert plan and len(plan["wrapup_queries"]) == 3 and not plan.get("fallback"), plan
+
+
+@test
+def smalltalk_fixed_lines_cost_zero_tokens():
+    s = fresh_store()
+    st = turn(s, "U1001", "Kaise ho?")
+    assert st["llm_calls"] == [], st["llm_calls"]
+    assert s.tokens_get("U1001", NIGHT) == 0, s.tokens_get("U1001", NIGHT)
+
+
+@test
+def daily_reset_clears_tokens_windup_and_plan():
+    s = fresh_store()
+    prev = S.raw["lead_token_budget_reset"]["value"]
+    S.raw["lead_token_budget_reset"]["value"] = "daily"
+    try:
+        s.tokens_add("U1001", 40000, DAY)
+        s.windup_plan_save("U1001", {"recap": "", "open_doubt": "", "wrapup_queries": ["q1"], "used": 1})
+        assert s.windup_mark("U1001") is True
+        nxt = DAY + timedelta(days=1)
+        assert s.tokens_get("U1001", nxt) == 0, s.tokens_get("U1001", nxt)
+        assert s.windup_plan_get("U1001") is None
+        assert s.windup_mark("U1001") is True                            # flag cleared too
+    finally:
+        S.raw["lead_token_budget_reset"]["value"] = prev
+
+
+@test
+def daily_reset_fires_the_alert_again_next_day():
+    s = fresh_store()
+    llm = TokenLLM(per=500)
+    prev = S.raw["lead_token_budget_reset"]["value"]
+    S.raw["lead_token_budget_reset"]["value"] = "daily"
+    try:
+        day2 = DAY + timedelta(days=1)
+        s.tokens_add("U1001", 34000, DAY)
+        turn(s, "U1001", "Stop-loss kya hota hai?", now=DAY, llm=llm)                    # 35500
+        turn(s, "U1001", "Risk management samjhao", now=DAY + timedelta(minutes=1), llm=llm)   # alert 1
+        assert len(s.db["alerts"]) == 1, s.db["alerts"]
+        s.tokens_add("U1001", 34000, day2)                # new day: counter, flag and plan reset together
+        assert s.windup_plan_get("U1001") is None
+        turn(s, "U1001", "Position sizing kya hai", now=day2, llm=llm)                   # 35500
+        turn(s, "U1001", "Expiry kya hoti hai", now=day2 + timedelta(minutes=1), llm=llm)      # alert 2
+        assert len(s.db["alerts"]) == 2, s.db["alerts"]
+    finally:
+        S.raw["lead_token_budget_reset"]["value"] = prev
+
 
 if os.environ.get("MYSQL_DB"):
     @test
