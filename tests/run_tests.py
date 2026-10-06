@@ -1228,6 +1228,13 @@ if os.environ.get("REDIS_URL"):
         r = redis.Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
         r.flushdb()
         s = RedisStore(os.environ["REDIS_URL"])
+        s.last_reply_set("C1", 500); s.last_reply_set("C1", 499)          # only moves forward
+        assert s.last_reply_get("C1") == 500 and s.last_reply_get("C2") == 0
+        it = Intake(r)                                                   # newest customer message received per chat
+        it.enqueue({"event_id": "910", "kind": "user_message", "user_id": "U9", "conversation_id": "C9"})
+        it.enqueue({"event_id": "905", "kind": "user_message", "user_id": "U9", "conversation_id": "C9"})
+        it.enqueue({"event_id": "920", "kind": "staff_message", "user_id": "U9", "conversation_id": "C9"})
+        assert r.get("tanya:lastin:C9") == "910", r.get("tanya:lastin:C9")
         st = turn(s, "U1001", "Hello")
         assert s.get("U1001")["version"] == 1
         stale = s.get("U1001")
@@ -1349,6 +1356,60 @@ def summary_is_capped_at_40_words():
     run_on = " ".join(["shabd"] * 60)
     out = cap_words(run_on)
     assert len(out.split()) <= 40 and out.endswith("…"), out
+
+
+@test
+def last_posted_reply_id_is_recorded_for_the_chat():
+    """PWA typing bubble: the CRM id of Tanya's newest posted message is kept per chat (only moves forward)."""
+    from tanya.crm_adapter import ConsoleAdapter
+    from tanya.workers import TurnHandler
+    os.environ["USE_LANGGRAPH"] = "0"
+    s = fresh_store()
+    s.last_reply_set("C5", 700); s.last_reply_set("C5", 650)
+    assert s.last_reply_get("C5") == 700 and s.last_reply_get("C6") == 0
+
+    class NumAdapter(ConsoleAdapter):
+        n = 900
+        def post_message(self, conversation_id, text):
+            NumAdapter.n += 1
+            return str(NumAdapter.n)
+    a = NumAdapter()
+    timeutil.set_clock(DAY)
+    TurnHandler(s, LLMX, KB, a, lambda u: PACK.test_users.get(u))(
+        {"event_id": "951", "kind": "user_message", "user_id": "U1001", "conversation_id": "C95",
+         "text": "Stop loss kya hota hai?"})
+    assert s.last_reply_get("C95") == NumAdapter.n > 900, (s.last_reply_get("C95"), NumAdapter.n)
+
+
+@test
+def typing_kept_while_a_failed_reply_waits_for_its_retry():
+    """CRM down while Tanya posts: the reply is retried later, and the PWA keeps showing 'typing' until then."""
+    from tanya.crm_adapter import ConsoleAdapter
+    from tanya.workers import TurnHandler
+    os.environ["USE_LANGGRAPH"] = "0"
+    if not os.environ.get("REDIS_URL"):
+        return                                   # the reply retry (PT3) lives in Redis
+    from tanya.memory_store import RedisStore
+    s = RedisStore(os.environ["REDIS_URL"])
+    for k in ("tanya:typing:C96", "tanya:retry:961", "tanya:done:961", "tanya:posted:961:0"):
+        s.r.delete(k)
+
+    class DownAdapter(ConsoleAdapter):
+        def post_message(self, conversation_id, text):
+            raise ConnectionError("CRM down")
+    timeutil.set_clock(DAY)
+    try:
+        TurnHandler(s, LLMX, KB, DownAdapter(), lambda u: PACK.test_users.get(u))(
+            {"event_id": "961", "kind": "user_message", "user_id": "U1001", "conversation_id": "C96",
+             "text": "Stop loss kya hota hai?"})
+        raise AssertionError("expected POST_FAILED")
+    except RuntimeError as e:
+        assert str(e).startswith("POST_FAILED"), e
+    assert s.typing_get("C96") == "retrying"
+    TurnHandler(s, LLMX, KB, ConsoleAdapter(), lambda u: PACK.test_users.get(u))(
+        {"event_id": "961", "kind": "user_message", "user_id": "U1001", "conversation_id": "C96",
+         "text": "Stop loss kya hota hai?"})                      # redelivered: posted now, typing cleared
+    assert s.typing_get("C96") is None
 
 
 if __name__ == "__main__":

@@ -50,7 +50,24 @@ class Intake:
                 except Exception:
                     pass
             raise
+        self._note_received(event)
         return True
+
+    _LAST_IN_LUA = ("local c = tonumber(redis.call('GET', KEYS[1]) or '0') "
+                    "if tonumber(ARGV[1]) > c then redis.call('SET', KEYS[1], ARGV[1]) end "
+                    "redis.call('EXPIRE', KEYS[1], 86400) return 1")
+
+    def _note_received(self, event):
+        """Newest customer message Tanya has taken in for this chat (webhook or reconciler). The PWA keeps the
+        typing bubble while the customer's latest message is newer than this: Tanya has not even received it yet
+        (late / lost webhook), but the reconciler will bring it in and she will answer (06-Oct-2026)."""
+        eid, conv = str(event.get("event_id") or ""), str(event.get("conversation_id") or "")
+        if event.get("kind", "user_message") != "user_message" or not eid.isdigit() or not conv:
+            return
+        try:
+            self.r.eval(self._LAST_IN_LUA, 1, f"tanya:lastin:{conv}", int(eid))
+        except Exception:
+            pass
 
 
 class StreamWorker:

@@ -174,6 +174,8 @@ def pwa_status(conversation_id: str, request: Request):
     now = timeutil.now()
     h = store.handoff_get(conversation_id)
     return {"ok": True, "typing": store.typing_get(conversation_id),
+            "last_reply_id": store.last_reply_get(conversation_id),
+            "last_received_id": int(store.r.get(f"tanya:lastin:{conversation_id}") or 0) if hasattr(store, "r") else 0,
             "mode": "HUMAN" if store.human_flag(conversation_id, now) else "BOT",
             "handoff": {k: h.get(k) for k in ("status", "period", "started_at", "due_at")} if h else None}
 

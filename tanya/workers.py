@@ -65,10 +65,18 @@ class TurnHandler:
         conv0 = str(event.get("conversation_id") or "")
         if conv0 and kind == "user_message":          # the PWA shows "typing" only while this is set (06-Oct)
             self.store.typing_set(conv0, "working", S.get("typing_ttl_seconds", 90))
+        retrying = False
         try:
             return self._turn(event, kind)
+        except RuntimeError as e:
+            retrying = str(e).startswith("POST_FAILED")
+            raise
         finally:
-            if conv0:
+            if conv0 and retrying:
+                # the reply is saved and is posted again when this job is redelivered (CRM was down): the customer
+                # keeps seeing "Tanya is typing" until then instead of a silent chat
+                self.store.typing_set(conv0, "retrying", S.get("reclaim_idle_seconds", 60) + 60)
+            elif conv0:
                 self.store.typing_clear(conv0)
 
     def _turn(self, event, kind):
@@ -230,6 +238,11 @@ class TurnHandler:
             try:
                 crm_id = self.adapter.post_message(conv, text)
                 self._mark(posted, "posted", value=crm_id)
+                try:
+                    if str(crm_id or "").isdigit():
+                        self.store.last_reply_set(conv, int(crm_id))   # PWA: typing stays until this is on screen
+                except Exception:
+                    pass
                 self.store.emit([{"type": "reply_posted", "user_id": event.get("user_id"), "at": iso(tnow()),
                                   "source_event_id": event.get("event_id"), "bubble": i, "text": text,
                                   "crm_message_id": str(crm_id or "")}])

@@ -189,6 +189,15 @@ class FileStore:
         v = self.db.get("typing", {}).get(conversation_id)
         return v[0] if v and v[1] > _t.time() else None
 
+    def last_reply_set(self, conversation_id, crm_message_id):
+        with self.lock:
+            d = self.db.setdefault("last_reply", {})
+            d[conversation_id] = max(int(d.get(conversation_id, 0)), int(crm_message_id))
+            self._flush()
+
+    def last_reply_get(self, conversation_id):
+        return int(self.db.get("last_reply", {}).get(conversation_id, 0))
+
     # ---- conversation summary bookkeeping (summaries.py)
     def summary_touch(self, conversation_id, user_id, now_epoch, force=False):
         with self.lock:
@@ -370,6 +379,18 @@ class RedisStore:
 
     def typing_get(self, conversation_id):
         return self.r.get(f"tanya:typing:{conversation_id}")
+
+    # CRM id of the newest message Tanya posted in this chat: the PWA keeps the typing bubble until that message is
+    # on screen (06-Oct-2026). Only ever moves forward (Lua max), kept 1 day.
+    _LAST_REPLY_LUA = ("local c = tonumber(redis.call('GET', KEYS[1]) or '0') "
+                       "if tonumber(ARGV[1]) > c then redis.call('SET', KEYS[1], ARGV[1]) end "
+                       "redis.call('EXPIRE', KEYS[1], 86400) return 1")
+
+    def last_reply_set(self, conversation_id, crm_message_id):
+        self.r.eval(self._LAST_REPLY_LUA, 1, f"tanya:lastreply:{conversation_id}", int(crm_message_id))
+
+    def last_reply_get(self, conversation_id):
+        return int(self.r.get(f"tanya:lastreply:{conversation_id}") or 0)
 
     # ---- conversation summary bookkeeping (summaries.py)
     #   tanya:summary_dirty  hash conv -> json {count, first, user_id, force, retry_after}
