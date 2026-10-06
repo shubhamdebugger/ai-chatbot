@@ -202,6 +202,16 @@ def _smalltalk_line(rec, st, cat, disclosed_now):
     return (fx, _rotate(rec, fx, ROT_TWO)) if fx else ("", "")
 
 
+def _support_case(st, rec, lang, now) -> dict:
+    """No approved answer to his support question: a case for the team and a senior callback.
+    Returns the FX-19 values (case number, honest contact time)."""
+    case_no = open_case(rec, st["store"], "support", st["masked"], now)
+    _ev(st, "case", case_no=case_no, kind="support", text=st["masked"])
+    when = when_phrase(now, lang)
+    _ev(st, "callback", **request_callback(rec, "senior", now, when))
+    return {"case_no": case_no, "when": when}
+
+
 def n_compose(st):
     rec, now, d = st["rec"], st["now"], st["decision"]
     lang = st["labels"].get("language") or rec["profile"].get("language", "hinglish")
@@ -231,8 +241,7 @@ def n_compose(st):
             vals["case_no"] = open_case(rec, st["store"], "grievance", st["masked"], now)
             _ev(st, "case", case_no=vals["case_no"], kind="grievance", text=st["masked"])
         if fx == "FX-19":
-            vals["case_no"] = open_case(rec, st["store"], "support", st["masked"], now)
-            _ev(st, "case", case_no=vals["case_no"], kind="support", text=st["masked"])
+            vals.update(_support_case(st, rec, lang, now))
         if fx in ("FX-07", "FX-08", "FX-14"):
             vals["when"] = when_phrase(now, lang)
         if fx in ("FX-07", "FX-08"):
@@ -268,7 +277,12 @@ def n_compose(st):
         _usage(st, res)
         st["golden_used"] = ex_ids
         reply = (res.data or {}).get("reply", "").strip() if res.ok else ""
-        if reply:
+        if reply and d.action == "ANSWER_SUPPORT" and (res.data or {}).get("covered") is False:
+            # the closest knowledge does not answer it → never guess: case + senior callback (FX-19)
+            st["decision"] = d = Decision("SUPPORT_CASE", "R17-NOTCOVERED", fixed_line="FX-19")
+            B.append({"id": "FX-19", "kind": "fixed",
+                      "text": PACK.fixed("FX-19", lang, name=name, **_support_case(st, rec, lang, now))})
+        elif reply:
             st["ai_data"] = res.data
             B.append({"id": "AI", "kind": "ai", "text": reply})
         else:

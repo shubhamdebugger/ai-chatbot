@@ -82,7 +82,13 @@ def _reply(system, last):
                   "main_pain": " Trading mein aapko sabse zyada kya mushkil lagta hai?",
                   "time_available": " Market ke time aap screen dekh paate hain?",
                   "goal": " Aap trading se kya haasil karna chahte hain?"}.get(asked, "")
-    return json.dumps({"reply": reply, "last_promise": "", "asked_field": asked}, ensure_ascii=False)
+    covered = True
+    if action == "ANSWER_SUPPORT":   # covered when more than half of his words appear in the approved knowledge
+        words = [w for w in re.findall(r"\w{4,}", last.lower()) if w not in ("mein", "nahi", "kaise", "kyun", "raha", "rahi")]
+        kb = k.group(1).lower() if k else ""
+        covered = bool(words) and sum(w in kb for w in words) * 2 > len(words)
+    return json.dumps({"reply": reply, "last_promise": "", "asked_field": asked, "covered": covered},
+                      ensure_ascii=False)
 
 
 def mock_complete(system, messages):

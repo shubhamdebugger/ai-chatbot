@@ -368,18 +368,19 @@ def langgraph_and_plain_loop_agree():
 
 @test
 def knowledge_search_finds_lesson():
-    hits = KB.search("SL kya hota hai?")
-    assert hits and hits[0]["doc_id"] == "LES-002", hits[:2]
+    hits = KB.search("position size kaise nikale?", categories=["Lesson"])
+    assert hits and hits[0]["doc_id"] == "H06", hits[:2]
+    refund = KB.search("refund chahiye", categories=["FAQ"])
+    assert refund and refund[0]["doc_id"] == "D01", refund[:2]
 
 
 @test
 def voice_tool_speaks_only_approved_text():
     from tanya.knowledge import for_voice
-    out = for_voice(KB.search("SL kya hota hai?"))
-    assert out["found"] and out["results"][0]["title"] == KB.search("SL kya hota hai?")[0]["title"]
-    refund = [h for h in KB.search("refund chahiye") if h["doc_id"] == "FAQ-006"]
-    assert refund, "refund FAQ should be found by search"
-    out = for_voice(refund)
+    out = for_voice(KB.search("refund chahiye"))
+    assert out["found"] and out["results"][0]["title"] == KB.search("refund chahiye")[0]["title"]
+    placeholder = dict(KB.search("refund chahiye")[0], status="PLACEHOLDER - not approved")
+    out = for_voice([placeholder])
     assert out == {**out, "found": False, "results": []}, out
 
 

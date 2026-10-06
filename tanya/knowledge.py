@@ -60,6 +60,12 @@ def tokens(text: str):
     return out
 
 
+def _category(head: dict, doc_id: str) -> str:
+    """The file's 'category:' if it has one; else from the id letter (H = lessons, the rest = FAQ).
+    Chat filters by category (support → FAQ, refusals → Lesson), so every chunk needs one."""
+    return head.get("category") or ("Lesson" if doc_id.upper().startswith("H") else "FAQ")
+
+
 class KnowledgeIndex:
     def __init__(self):
         self.chunks = []
@@ -73,8 +79,9 @@ class KnowledgeIndex:
             ans = re.search(r"Answer:\s*\n(.*?)(?:\n\s*\nNever say:|\Z)", body, flags=re.S)
             never = re.search(r"Never say:\s*\n(.*)$", body, flags=re.S)
             answer = (ans.group(1) if ans else body).strip()
-            doc = {"doc_id": head.get("doc_id", path.stem), "title": head.get("title", path.stem),
-                   "category": head.get("category", ""), "status": head.get("status", ""),
+            doc_id = head.get("doc_id", path.stem)
+            doc = {"doc_id": doc_id, "title": head.get("title", path.stem),
+                   "category": _category(head, doc_id), "status": head.get("status", ""),
                    "version": head.get("version", ""), "questions": (qs.group(1).strip() if qs else ""),
                    "never_say": (never.group(1).strip() if never else "")}
             for i, part in enumerate(self._split(answer)):
