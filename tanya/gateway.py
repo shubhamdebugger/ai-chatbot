@@ -30,6 +30,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
+from . import access
 from . import memory_model as mm
 from .brief import agent_card
 from .content_pack import PACK
@@ -295,6 +296,8 @@ def _webhook(payload, headers):
         from .handoff_recovery import agent_replied
         sender = str((payload.get("data") or {}).get("user_id", ""))
         agent_replied(store, ev.conversation_id, timeutil.now(), agent_id=sender)   # keeps HUMAN, cancels recovery
+        from .handoff_recovery import agent_activity                 # Tanya back after N quiet agent minutes
+        agent_activity(store, ev.conversation_id, ev.user_id, ev.event_id, timeutil.now())
         store.summary_touch(ev.conversation_id, ev.user_id, time.time())
     if ev.kind not in ("user_message", "staff_message"):
         return 200, {"ok": True, "skipped": ev.kind}, ev
@@ -331,7 +334,8 @@ def pwa_status(conversation_id: str, request: Request):
     return {"ok": True, "typing": store.typing_get(conversation_id),
             "last_reply_id": store.last_reply_get(conversation_id),
             "last_received_id": int(store.r.get(f"tanya:lastin:{conversation_id}") or 0) if hasattr(store, "r") else 0,
-            "mode": "HUMAN" if store.human_flag(conversation_id, now) else "BOT",
+            # not on the dashboard's AI list: the team answers this chat, so the PWA shows "team will reply"
+            "mode": "HUMAN" if store.human_flag(conversation_id, now) or access.is_off(store, conversation_id) else "BOT",
             "handoff": {k: h.get(k) for k in ("status", "period", "started_at", "due_at")} if h else None}
 
 

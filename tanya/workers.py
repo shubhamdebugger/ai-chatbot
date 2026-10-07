@@ -63,6 +63,14 @@ class TurnHandler:
         if self._marked(event, "done"):               # a reclaimed job whose turn was already delivered (PT5)
             return None
         conv0 = str(event.get("conversation_id") or "")
+        if getattr(self.adapter, "access_gate", False):   # dashboard → AI tab: is Tanya on for this number?
+            from . import access
+            on = access.chat_enabled(self.adapter, self.store, event.get("user_id", ""))
+            access.mark_off(self.store, conv0, not on)
+            if not on:                                # not on the list: the team answers, Tanya stays silent
+                self._mark(event, "done")
+                self._outcome(event, "SKIPPED_GATE")
+                return None
         if conv0 and kind == "user_message":          # the PWA shows "typing" only while this is set (06-Oct)
             self.store.typing_set(conv0, "working", S.get("typing_ttl_seconds", 90))
         retrying = False
@@ -672,9 +680,10 @@ class Housekeeping:
         return self.conn
 
     def run(self):
-        from .handoff_recovery import recovery_check, reseed_from_db
+        from .handoff_recovery import agent_idle_check, recovery_check, reseed_from_db
         from .callbacks import sla_check
         recovery_check(self.store, self.adapter, self.intake)
+        agent_idle_check(self.store, self.adapter, self.intake)
         now = time.time()
         try:
             if now - self.last_seed > S.get("handoff_reseed_seconds", 300):

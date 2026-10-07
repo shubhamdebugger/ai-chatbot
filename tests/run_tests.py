@@ -1818,6 +1818,85 @@ def typing_kept_while_a_failed_reply_waits_for_its_retry():
     assert s.typing_get("C96") is None
 
 
+
+@test
+def chat_only_for_numbers_on_the_ai_list():
+    """Dashboard → AI tab: Tanya answers chat only for listed numbers (or everyone with the master switch)."""
+    from tanya import access
+    from tanya.workers import TurnHandler
+
+    class Store:
+        r = _FakeR()
+        def emit(self, events):
+            self.events = getattr(self, "events", []) + events
+
+    class Adapter:
+        access_gate = True
+        calls = 0
+        def get_user(self, user_id):
+            Adapter.calls += 1
+            return {"details": [{"slug": "location", "value": "Pune"}, {"slug": "phone", "value": "+91 98765 43210"}]}
+
+    st, ad = Store(), Adapter()
+    h = TurnHandler(st, LLMX, KB, ad, lambda u: None)
+    ev = {"event_id": "990", "kind": "user_message", "user_id": "U77", "conversation_id": "77", "text": "hi"}
+    old = dict(access._cache)
+    try:
+        access._cache.update(at=time.time(), value={"everyone": False, "phones": {"9000000000"}})
+        assert h(ev) is None and access.is_off(st, "77")                 # not listed: silent, PWA told
+        assert st.events[-1]["status"] == "SKIPPED_GATE"
+        assert access.phone_for(ad, st, "U77") == "9876543210" and Adapter.calls == 1   # cached after one lookup
+        access._cache.update(value={"everyone": False, "phones": {"9876543210"}})
+        assert access.chat_enabled(ad, st, "U77")
+        access._cache.update(value={"everyone": True, "phones": set()})
+        assert access.chat_enabled(ad, st, "U999")                       # master switch: everyone
+        access.mark_off(st, "77", False)
+        assert not access.is_off(st, "77")
+    finally:
+        access._cache.clear()
+        access._cache.update(old)
+
+
+@test
+def agent_quiet_10_min_gives_the_chat_back_to_tanya():
+    """07-Oct: an agent talked with him -> Tanya back after 10 quiet agent minutes; what the agent answered stays
+    answered, only a question asked after the agent's last message is picked up."""
+    from datetime import timedelta
+    from tanya.handoff_recovery import agent_activity, agent_idle_check
+    msgs = [{"id": "99", "user_id": "U1001", "user_type": "user", "message": "refund kab milega?"},
+            {"id": "100", "user_id": "7", "user_type": "agent", "message": "2 din mein"},
+            {"id": "101", "user_id": "U1001", "user_type": "user", "message": "stop loss kya hai?"}]
+    s, crm, intake = fresh_store(), _FakeCRM(messages=msgs), _FakeIntake()
+    s.set_human_flag("C50", 12, DAY)
+    agent_activity(s, "C50", "U1001", "100", DAY)
+    assert agent_idle_check(s, crm, intake, now=DAY + timedelta(minutes=9)) == []          # agent still on
+    assert s.human_flag("C50", DAY + timedelta(minutes=9))
+    assert agent_idle_check(s, crm, intake, now=DAY + timedelta(minutes=11)) == ["C50"]    # 10 quiet minutes
+    assert not s.human_flag("C50", DAY + timedelta(minutes=11)) and s.release_time("C50")
+    assert [e["event_id"] for e in intake.events] == ["101-resume"]     # not 99: the agent answered that one
+
+    # agent answered everything -> back to Tanya, nothing to answer
+    s2, intake2 = fresh_store(), _FakeIntake()
+    s2.set_human_flag("C51", 12, DAY)
+    agent_activity(s2, "C51", "U1001", "100", DAY)
+    assert agent_idle_check(s2, _FakeCRM(messages=msgs[:2]), intake2, now=DAY + timedelta(minutes=11)) == ["C51"]
+    assert intake2.events == []
+
+    # a newer agent message whose webhook was lost keeps the agent on (timer restarts from it)
+    s3, crm3 = fresh_store(), _FakeCRM(replied=True, messages=msgs)
+    crm3.last_staff_message_id = lambda conv: "105"
+    s3.set_human_flag("C52", 12, DAY)
+    agent_activity(s3, "C52", "U1001", "100", DAY)
+    assert agent_idle_check(s3, crm3, _FakeIntake(), now=DAY + timedelta(minutes=11)) == []
+    assert s3.human_flag("C52", DAY) and s3.agent_idle_get("C52")["last_staff_id"] == "105"
+
+    # #bot / chat closed meanwhile: the timer just ends
+    s4 = fresh_store()
+    s4.set_human_flag("C53", 12, DAY)
+    agent_activity(s4, "C53", "U1001", "100", DAY)
+    s4.release_conversation("C53", DAY + timedelta(minutes=2))
+    assert s4.agent_idle_get("C53") is None
+
 if __name__ == "__main__":
     timeutil.set_clock(None)
     width = max(len(n) for _, n, _ in RESULTS)

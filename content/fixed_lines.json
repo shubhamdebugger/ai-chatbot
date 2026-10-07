@@ -2,9 +2,9 @@
   "_read_me": "Fixed lines FX-01..FX-18. The AI never writes these. {name}, {case_no}, {when}, {slot_1}, {slot_2}, {plan_line}, {limit}, {sebi_reg_no} are filled by code. Status: DRAFT - for Tushar and compliance approval (input D2).",
   "FX-01": {
     "moment": "AI disclosure - first message ever",
-    "english": "Hi {name}, I'm Tanya — TG Level's AI assistant. I'll guide you through your trial step by step and answer your questions. Whenever you want a person from our team, just say so.",
-    "hinglish": "Namaste {name}, main Tanya hoon — TG Level ki AI assistant. Aapke trial mein step by step guide karungi. Kabhi bhi team se baat karni ho, bas bol dijiye.",
-    "hindi": "नमस्ते {name}, मैं तान्या हूँ — TG Level की AI असिस्टेंट। आपके ट्रायल में स्टेप बाय स्टेप गाइड करूँगी। कभी भी टीम से बात करनी हो, बस बोल दीजिए।"
+    "english": "Hi {name}, I'm Tanya — TG Level's(Demo AI Guide). I'll guide you through your trial step by step and answer your questions. Whenever you want a person from our team, just say so.",
+    "hinglish": "Namaste {name}, main Tanya hoon — TG Level ki (Demo AI Guide). Aapke trial mein step by step guide karungi. Kabhi bhi team se baat karni ho, bas bol dijiye.",
+    "hindi": "नमस्ते {name}, मैं तान्या हूँ — TG Level की Demo AI Guide आपके ट्रायल में स्टेप बाय स्टेप गाइड करूँगी। कभी भी टीम से बात करनी हो, बस बोल दीजिए।"
   },
   "FX-02": {
     "moment": "Chat-first line, once after the first useful answer",
