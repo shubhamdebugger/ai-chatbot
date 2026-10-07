@@ -13,7 +13,7 @@ _RULES = {
     "grievance": r"(refund|complaint|fraud|cheat|dhokha|paise wapas|late aaye|late aate|late alert|scam)",
     "wants_person": r"(insaan se|human|agent se|kisi se baat|real person se baat|team se baat|talk to (a )?person)",
     "purchase_intent": r"(plan lena hai|plan le leta|subscribe karna|payment kaise|kharidna hai|buy the plan|want to buy|join karna hai|le leta hoon)",
-    "interest": r"(kitne ka|pric|fees|kitna hai|cost|plan mein kya|what is included|kya milega|₹|\bplans\b|plan kya|subscription)",
+    "interest": r"(kitne ka|pric|fees|kitna hai|cost|plan mein kya|what is included|kya milega|₹|\bplans\b|plan kya|subscription|\boffer)",
     "timing_objection": r"(salary|next week|agle mahine|next month|baad mein lunga)",
     "prefers_call": r"(call karna|call karo|call kar|time nahi|phone pe|phone par baat|call me)",
     "abuse": r"(idiot|stupid|bewakoof|bakwas|pagal|shut up)",
@@ -23,6 +23,7 @@ _RULES = {
     "refers_to_past": r"(kal kya|pichli baar|last time|maine kaha tha|kal bataya)",
     "support_question": r"(\bapp\b|notification|login|access|install|password|payment fail|alert nahi|locked)",
     "education_question": r"(kya hota|kya hai\?|kaise kaam|what is|samjhao|samjha do|explain|stop[- ]?loss|option|premium|expiry|risk|position size|overtrad|ce pe|example)",
+    "asks_founder": r"(founder|kisne banay|kisne shuru|who started|who runs|who is behind|peeche kaun)",
     "small_talk": r"(kya kar rahi|kaise ho|how are you|chai|good night|good morning|hello|^hi\b|^hey\b|what are you doing|thank)",
 }
 
