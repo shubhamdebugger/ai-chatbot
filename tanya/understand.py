@@ -49,7 +49,7 @@ Labels — list in "on" ONLY the labels that apply (often none: []):
 - asks_guarantee: asks whether returns, profit or money doubling is guaranteed or sure-shot ("guarantee hai?", "pakka profit?", "paise double honge?").
 - distress: heavy or painful money loss, despair, panic, fear — including a calm mention of a big past loss.
 - grievance: complaint about TG Level's service, refund demand, calling it fraud or cheating.
-- wants_person: asks to talk to a human / agent / team member.
+- wants_person: asks to talk to a human / agent / team member in this chat or on a call. NOT asking for the office address or whether he can visit the office ("office kahan hai", "milne aa sakte hai") — that is a question to answer.
 - purchase_intent: clearly wants to buy or pay for a plan now ("plan lena hai", "payment kaise karun"). If negated, on=false.
 - interest: asks the price, the plans, or what a plan includes.
 - timing_objection: wants to buy later for a reason ("salary next week").

@@ -16,7 +16,7 @@
 | S1.2 | Redis Streams and workers | JUNIOR A | ✅ | Deploy Redis (AOF on), run workers as services | Worker logs; `tanya:errors` empty |
 | S1.3 | CRM adapter | JUNIOR C + CODER D | 🟡 | `SupportBoardAdapter` — confirm names and shapes (A1–A4); keep NO delete function | Post a reply on staging; read it in the CRM thread |
 | S1.4 | Routing gate — Mode Policy (AI-C02) | JUNIOR A | ✅ | — | `run_tests.py` |
-| S1.5 | App polling and app-open event | JUNIOR C + app dev | 🟡 | App calls `/events/app` on open (signed, B2); polling back-off 1 s → 2 s → 15 s idle | App-open greeting on a real phone |
+| S1.5 | App polling and app-open event | JUNIOR C + app dev | 🟡 | App backend calls `/events/app` on open with header `X-App-Secret` = `APP_EVENTS_SECRET` (endpoint off while it is empty); polling back-off 1 s → 2 s → 15 s idle | App-open greeting on a real phone |
 | S2.1 | Knowledge base loading (AI-C05) | JUNIOR B | ✅ | Real files (C3, C4); choose `EMBEDDING_PROVIDER`; sync chunks to `orch_kb_chunks` | Search returns the right lesson |
 | S2.2 | Input guard (AI-C23) | JUNIOR A | ✅ | — | `run_tests.py` |
 | S2.3 | Understand call | JUNIOR B | ✅ | Tune on 2,000 real chats (F1) | Label accuracy sheet |

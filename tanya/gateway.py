@@ -232,8 +232,14 @@ async def webhook(request: Request):
 
 
 @app.post("/events/app")
-async def app_event(request: Request):
-    """TODO (app developer, B2): sign these calls; add plan_bought, consent_changed, journey events."""
+async def app_event(request: Request, x_app_secret: str = Header("")):
+    """App events from TG Lite's backend (never the browser), with the shared APP_EVENTS_SECRET.
+    Empty secret = endpoint off. TODO (app developer, B2): add plan_bought, consent_changed, journey events."""
+    secret = S.env("APP_EVENTS_SECRET")
+    if not secret:
+        raise HTTPException(404)
+    if not hmac.compare_digest(x_app_secret, secret):
+        raise HTTPException(401, "invalid app secret")
     body = await request.json()
     if body.get("event") != "app_open":
         return {"ok": True, "skipped": body.get("event")}
