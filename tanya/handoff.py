@@ -86,11 +86,23 @@ def open_case(rec, store, kind, text, now) -> str:
 
 
 def request_callback(rec, kind, now, when_text, slot=None) -> dict:
-    """kind: person | purchase | call_preference. State starts at 'requested'."""
+    """kind: person | purchase | call_preference. State starts at 'requested'.
+    The same request again in the SAME conversation within callback_merge_hours is the same callback (no duplicates).
+    A handoff in another conversation, or a day later, is a new callback — before 07-Oct-2026 one old open callback
+    (whose dashboard status Tanya never sees) swallowed every later handoff, so none of them reached the dashboard."""
+    from datetime import datetime
+    conv = str(rec.get("conversation_id") or "")
+    window = float(S.get("callback_merge_hours", 12)) * 3600
     for cb in rec["callbacks"]:
-        if cb["kind"] == kind and cb["state"] in ("requested", "booked"):
-            return cb   # one open callback per kind — no duplicates
+        if cb["kind"] != kind or cb["state"] not in ("requested", "booked") or not conv or cb.get("conversation_id") != conv:
+            continue
+        try:
+            age = (now - datetime.fromisoformat(cb["requested_at"])).total_seconds()
+        except Exception:
+            continue
+        if 0 <= age <= window:
+            return cb   # same chat, same request, still recent: one callback
     cb = {"id": f"CB-{rec['user_id']}-{len(rec['callbacks']) + 1}", "kind": kind, "state": "requested",
-          "requested_at": iso(now), "when_text": when_text, "slot": slot}
+          "requested_at": iso(now), "when_text": when_text, "slot": slot, "conversation_id": conv}
     rec["callbacks"].append(cb)
     return cb

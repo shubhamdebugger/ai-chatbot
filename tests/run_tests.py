@@ -1818,6 +1818,69 @@ def typing_kept_while_a_failed_reply_waits_for_its_retry():
     assert s.typing_get("C96") is None
 
 
+@test
+def each_handoff_conversation_gets_its_own_callback():
+    """07-Oct: one old open callback swallowed every later handoff, so none reached the dashboard. Same chat again
+    within callback_merge_hours = same callback; another chat, or a day later, = a new one."""
+    from tanya.handoff import request_callback
+    rec = {"user_id": "U77", "callbacks": [], "conversation_id": "C1"}
+    a = request_callback(rec, "person", DAY, "jaldi")
+    b = request_callback(rec, "person", DAY + timedelta(minutes=20), "jaldi")          # same chat, 20 min later
+    assert a["id"] == b["id"] and a["conversation_id"] == "C1"
+    rec["conversation_id"] = "C2"
+    c = request_callback(rec, "person", DAY + timedelta(minutes=30), "jaldi")          # another chat
+    assert c["id"] != a["id"] and c["conversation_id"] == "C2"
+    rec["conversation_id"] = "C1"
+    d = request_callback(rec, "person", DAY + timedelta(hours=13), "kal")              # same chat, next day
+    assert d["id"] not in (a["id"], c["id"]), rec["callbacks"]
+
+
+@test
+def callback_shows_the_agent_who_replied_when_nobody_was_assigned():
+    from tanya.callbacks import replying_agent
+    crm = _FakeCRM(messages=[
+        {"id": 10, "user_id": "U1", "user_type": "lead", "message": "team se baat"},
+        {"id": 11, "user_id": "2", "user_type": "bot", "message": "Team ko bata diya"},
+        {"id": 12, "user_id": "70799", "user_type": "admin", "message": ""},           # hidden CRM event: not a reply
+        {"id": 13, "user_id": "220", "user_type": "admin", "message": "Hi, main madad karta hoon"}])
+    assert replying_agent(crm, "C1", 10) == "220"
+    assert replying_agent(crm, "C1", 13) == ""
+
+
+@test
+def customer_asking_again_after_agent_reply_gets_tanya_back_after_deadline():
+    """07-Oct: after one agent reply the chat stayed HUMAN for good. A new customer message with no agent answer
+    within the day window (10 min) -> Tanya takes the chat back and answers THAT message."""
+    from tanya.crm_adapter import ConsoleAdapter
+    from tanya.workers import TurnHandler
+    from tanya.handoff_recovery import agent_replied, recovery_check
+    os.environ["USE_LANGGRAPH"] = "0"
+    s, a = fresh_store(), ConsoleAdapter()
+    timeutil.set_clock(DAY)
+    h = TurnHandler(s, LLMX, KB, a, lambda u: PACK.test_users.get(u))
+    h({"event_id": "801", "kind": "user_message", "user_id": "U1002", "conversation_id": "C80",
+       "text": "Mujhe kisi insaan se baat karni hai"})
+    assert s.handoff_get("C80")["status"] == "open"
+    agent_replied(s, "C80", DAY + timedelta(minutes=1), agent_id="220")
+    assert s.handoff_get("C80")["status"] == "agent_replied" and s.human_flag("C80", DAY + timedelta(minutes=2))
+    later = DAY + timedelta(minutes=5)
+    timeutil.set_clock(later)
+    posted_before = len(a.outbox.get("C80", []))
+    h({"event_id": "805", "kind": "user_message", "user_id": "U1002", "conversation_id": "C80",
+       "text": "Kya bina knowledge ke trade kar sakta hoon?"})
+    assert len(a.outbox.get("C80", [])) == posted_before          # HUMAN: Tanya silent for now
+    w = s.handoff_get("C80")
+    assert w["status"] == "open" and w["action"] == "CUSTOMER_WAITING" and w["last_message_id"] == "805", w
+    crm, intake = _FakeCRM(messages=[{"id": 805, "user_id": "U1002", "user_type": "lead",
+                                      "message": "Kya bina knowledge ke trade kar sakta hoon?"}]), _FakeIntake()
+    assert recovery_check(s, crm, intake, now=later + timedelta(minutes=9)) == []      # not due yet
+    assert recovery_check(s, crm, intake, now=later + timedelta(minutes=11)) == ["C80"]
+    assert s.handoff_get("C80")["status"] == "recovered" and not s.human_flag("C80", later + timedelta(minutes=11))
+    assert any("Deri ke liye" in t or "delay" in t.lower() for _, t in crm.posts), crm.posts     # FX-32
+    assert [e["event_id"] for e in intake.events] == ["805-resume"], intake.events                 # his question
+    timeutil.set_clock(None)
+
+
 if __name__ == "__main__":
     timeutil.set_clock(None)
     width = max(len(n) for _, n, _ in RESULTS)

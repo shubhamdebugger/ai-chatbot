@@ -95,6 +95,19 @@ def agent_replied(store, conversation_id, now, agent_id=""):
     return True
 
 
+def customer_waiting_again(store, conversation_id, user_id, now, message_id):
+    """The customer writes while the chat is HUMAN but no deadline is running any more (an agent already replied,
+    or staff took the chat over). The same rule as a fresh handoff applies to THIS message: if no staff member
+    answers it within the day (10 min) / night (12 h) window, Tanya takes the chat back and answers it
+    (07-Oct-2026: after one agent reply the chat stayed HUMAN for good and later questions were never answered)."""
+    conv = str(conversation_id)
+    h = store.handoff_get(conv)
+    if h and h.get("status") == "open":
+        return None                                           # a deadline is already running for this chat
+    return start_handoff(store, conv, user_id, "CUSTOMER_WAITING", "R-WAIT-AFTER-STAFF", now,
+                         last_message_id=message_id)
+
+
 def released_by_staff(store, conversation_id, now, how):
     """Staff closed the chat / typed #bot during an open handoff."""
     h = store.handoff_get(str(conversation_id))
@@ -175,7 +188,10 @@ def recovery_check(store, adapter, intake=None, now=None):
         # 4. answer what the customer wrote while waiting (his latest message), so nothing is left unanswered
         if intake is not None:
             try:
-                waiting = _customer_waiting(adapter, conv, h.get("user_id"), h.get("last_message_id"))
+                after_id = h.get("last_message_id")
+                if h.get("action") == "CUSTOMER_WAITING" and str(after_id or "").isdigit():
+                    after_id = int(after_id) - 1       # the message that started this wait is itself unanswered
+                waiting = _customer_waiting(adapter, conv, h.get("user_id"), after_id)
             except Exception:
                 waiting = []
             if waiting:

@@ -61,6 +61,21 @@ def notify(kind, payload):
             print(f"[notify] webhook failed {type(e).__name__}", file=sys.stderr, flush=True)
 
 
+def replying_agent(adapter, conv, after_id):
+    """Id of the first staff member who wrote in the chat after Tanya's promise ('' if none / unknown). Shown as the
+    callback's agent when nobody was formally assigned in the CRM (07-Oct-2026)."""
+    try:
+        after = int(after_id or 0)
+        for m in adapter.get_conversation(conv, limit=60) or []:
+            has_text = bool(str(m.get("message") or "").strip()) or str(m.get("attachments") or "") not in ("", "[]")
+            if (has_text and str(m.get("user_type")) in ("agent", "admin")
+                    and str(m.get("user_id")) != str(getattr(adapter, "tanya_agent", "")) and int(m.get("id", 0)) > after):
+                return str(m.get("user_id"))
+    except Exception:
+        pass
+    return ""
+
+
 def sla_check(conn, adapter, now, days=7):
     """Recompute status of every open callback from the CRM. Returns the list of status changes."""
     from .timeutil import iso
@@ -85,6 +100,8 @@ def sla_check(conn, adapter, now, days=7):
             except Exception as e:                       # CRM unreachable: keep the old status, try next run
                 print(f"[callbacks] CRM read failed conv={conv}: {type(e).__name__}", file=sys.stderr, flush=True)
                 continue
+            if replied and not agent:
+                agent = replying_agent(adapter, conv, src)     # answered by an agent nobody assigned: show who
             if agent and agent != (agent_prev or ""):
                 ev = "assigned" if not agent_prev else "reassigned"
                 c.execute("UPDATE orch_callbacks SET assigned_agent_id=%s WHERE callback_id=%s", (agent, cb_id))

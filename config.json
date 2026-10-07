@@ -188,6 +188,11 @@
     "owner": "Tushar 06-Oct-2026",
     "note": "Outside business hours: no agent reply within this -> Tanya resumes"
   },
+  "callback_merge_hours": {
+    "value": 12,
+    "owner": "Tushar - 07-Oct-2026",
+    "note": "A repeated contact request in the same conversation within this many hours stays one callback; a new conversation or later request is a new callback"
+  },
   "callback_sla_minutes": {
     "value": 10,
     "owner": "Tushar 06-Oct-2026",

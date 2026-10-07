@@ -108,6 +108,11 @@ class TurnHandler:
             if st.get("gate_reason") == "HUMAN_MODE" or suppressed:
                 # the customer now waits for staff: alert the team lead if nobody answers (v4 §7.6)
                 self.store.staff_wait_start(conv, event.get("user_id", ""), tnow())
+            if (st.get("gate_reason") == "HUMAN_MODE" and kind == "user_message" and conv
+                    and str(event.get("event_id") or "").isdigit()):
+                # HUMAN mode with nobody on the clock: this message gets the day/night deadline (handoff_recovery)
+                from .handoff_recovery import customer_waiting_again
+                customer_waiting_again(self.store, conv, event.get("user_id", ""), tnow(), event.get("event_id"))
             d = st.get("decision")
             if d and d.action in S.get("handoff_human_actions", ["HAND_OVER_PERSON"]) and not suppressed \
                     and not post_failed:

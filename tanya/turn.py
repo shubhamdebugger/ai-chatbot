@@ -211,7 +211,8 @@ def _callback_event(st, cb, reason, promise):
     from .handoff_recovery import callback_due
     st["callback_emitted"] = True
     _ev(st, "callback", conversation_id=st["rec"].get("conversation_id"), source_message_id=st.get("event_id"),
-        reason=reason, promise=promise, due_at=iso(callback_due(st["now"])), **cb)
+        reason=reason, promise=promise, due_at=iso(callback_due(st["now"])),
+        **{k: v for k, v in cb.items() if k != "conversation_id"})
 
 
 def _support_case(st, rec, lang, now) -> dict:
