@@ -13,7 +13,7 @@ YES_NO_LABELS = [
     "small_talk", "education_question", "support_question", "trade_advice_seeking",
     "distress", "grievance", "wants_person", "purchase_intent", "interest",
     "timing_objection", "prefers_call", "abuse", "flirting", "asks_if_ai",
-    "not_helpful", "refers_to_past", "asks_guarantee",
+    "not_helpful", "refers_to_past", "asks_guarantee", "asks_founder",
 ]
 
 FACT_FIELDS = {
@@ -47,11 +47,12 @@ Labels — list in "on" ONLY the labels that apply (often none: []):
 - support_question: app, alerts, notifications, login, payment, access, installation problems or how-to.
 - trade_advice_seeking: wants a view on market direction, an entry/exit/target/stop-loss level, which strike or stock to buy or sell, or whether to take a specific alert. NOT a concept question, NOT buying the plan.
 - asks_guarantee: asks whether returns, profit or money doubling is guaranteed or sure-shot ("guarantee hai?", "pakka profit?", "paise double honge?").
+- asks_founder: asks who founded, owns or runs TG Level, or about the founder ("founder kaun hai?", "company kisne banayi?", "who is behind TG Levels?"). NOT a plan or offer question.
 - distress: heavy or painful money loss, despair, panic, fear — including a calm mention of a big past loss.
 - grievance: complaint about TG Level's service, refund demand, calling it fraud or cheating.
 - wants_person: asks to talk to a human / agent / team member in this chat or on a call. NOT asking for the office address or whether he can visit the office ("office kahan hai", "milne aa sakte hai") — that is a question to answer.
 - purchase_intent: clearly wants to buy or pay for a plan now ("plan lena hai", "payment kaise karun"). If negated, on=false.
-- interest: asks the price, the plans, or what a plan includes.
+- interest: asks the price, the plans, an offer, or what a plan includes.
 - timing_objection: wants to buy later for a reason ("salary next week").
 - prefers_call: says he has no time to chat, or asks to be called ("baad mein call karna", "phone pe baat karo").
 - abuse: abusive or insulting words.

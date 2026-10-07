@@ -16,13 +16,13 @@ from .timeutil import hm
 # Actions whose whole reply is a fixed line (no AI writing)
 FIXED_ONLY = {"LIMIT_SPEND", "BOUNDARY_ABUSE", "HAND_OVER_PERSON", "LIMIT_EDUCATION",
               "HAND_OVER_PURCHASE", "BOOK_CALL", "ASKS_IF_AI", "BOUNDARY_FIRM", "LIMITED_MODE",
-              "ANSWER_GUARANTEE", "EARLY_TRIAL_PRICING"}
+              "ANSWER_GUARANTEE", "EARLY_TRIAL_PRICING", "ANSWER_FOUNDER"}
 # Actions that count toward the 30 education questions
 COUNTS_AS_EDUCATION = {"ANSWER_EDUCATION"}
 # Actions where emoji are not allowed (Personality Guide §3.5)
 NO_EMOJI = {"PAUSE_SELLING", "LOG_GRIEVANCE", "BOUNDARY_ABUSE", "REFUSE_AND_TEACH", "HAND_OVER_PERSON",
             "HAND_OVER_PURCHASE", "ANSWER_PRICE", "LIMIT_SPEND", "LIMIT_EDUCATION", "BOUNDARY_FIRM",
-            "ANSWER_GUARANTEE"}
+            "ANSWER_GUARANTEE", "ANSWER_FOUNDER"}
 
 
 @dataclass
@@ -69,6 +69,9 @@ def decide(labels: dict, rec: dict, now, limited: bool = False) -> Decision:
     # Row 7G — money-guarantee question: fixed compliance line, no AI words
     if _on(labels, "asks_guarantee"):
         return Decision("ANSWER_GUARANTEE", "R07G", fixed_line="FX-20")
+    # Row 7F — founder question: fixed line, no AI words. Plan / offer questions keep their own rows.
+    if _on(labels, "asks_founder") and not _on(labels, "interest") and not _on(labels, "purchase_intent"):
+        return Decision("ANSWER_FOUNDER", "R07F", fixed_line="FX-33")
     # Kill switch 'limited': general and education only (Architecture §7.5)
     if limited and (_on(labels, "purchase_intent") or _on(labels, "interest") or _on(labels, "support_question")):
         return Decision("LIMITED_MODE", "R-LIMITED", fixed_line="FX-06")
