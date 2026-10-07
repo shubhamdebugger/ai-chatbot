@@ -1,7 +1,0 @@
-# Ms Tanya — every process as one unit (start/stop/enable all with: systemctl start|stop|enable tanya.target)
-[Unit]
-Description=Ms Tanya (gateway + workers)
-Wants=tanya-gateway.service tanya-persist.service tanya-loader.service tanya-sessions.service tanya-reconcile.service tanya-turn@0.service tanya-turn@1.service tanya-turn@2.service tanya-turn@3.service tanya-turn@4.service tanya-turn@5.service tanya-turn@6.service tanya-turn@7.service
-
-[Install]
-WantedBy=multi-user.target
