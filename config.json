@@ -10,6 +10,16 @@
     "owner": "Tushar 25-Sep-2026",
     "note": "Only education questions count; resets 00:00 IST"
   },
+  "early_pricing_hidden_until_trial_day": {
+    "value": 2,
+    "owner": "Open - early-trial pricing restriction",
+    "note": "Plan/price questions before this trial day, and on it until early_pricing_hidden_until_time, get FX-32 (no prices) instead of ANSWER_PRICE; Day 1 = trial start date"
+  },
+  "early_pricing_hidden_until_time": {
+    "value": "15:30",
+    "owner": "Open - early-trial pricing restriction",
+    "note": "IST cutoff on the last hidden trial day; at this minute prices are allowed"
+  },
   "failed_turns_for_handoff": {
     "value": 3,
     "owner": "Tushar 25-Sep-2026",
