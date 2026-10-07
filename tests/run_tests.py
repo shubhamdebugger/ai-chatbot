@@ -316,6 +316,55 @@ def guarantee_question_gives_fixed_line():
     assert d.action == "ANSWER_GUARANTEE" and d.fixed_line == "FX-20", d
 
 
+# ---------------------------------------------------------------- founder question (R07F, FX-33)
+FX33 = "Founder Details Printed"
+FOUNDER_QUESTIONS = ["who is the founder?", "Founder kaun hai?", "TG Levels ka owner kaun hai?",
+                     "company kisne banayi?", "who started TG Levels?", "Tushar Ghone kaun hai?",
+                     "tell me more about your CEO", "TG Levels ka malik kaun hai?", "संस्थापक कौन है?"]
+
+
+@test
+def founder_question_gives_fixed_line_without_ai():
+    for uid in ("U1001", "U1006"):                       # with and without consent
+        for msg in FOUNDER_QUESTIONS:
+            s = fresh_store()
+            turn(s, uid, "Hello")
+            st = turn(s, uid, msg)
+            assert [b["id"] for b in st["bubbles"]] == ["FX-33"], (uid, msg, st["bubbles"])
+            assert st["bubbles"][0]["text"] == FX33, (msg, st["bubbles"][0]["text"])
+            assert st["trace"]["action"] == "FIXED_GATE" and st["trace"]["reason"] == "R07F", (msg, st["trace"])
+            assert st["llm_calls"] == [], (msg, st["llm_calls"])
+
+
+@test
+def founder_question_first_message_keeps_disclosure():
+    st = turn(fresh_store(), "U1001", "who is the founder?")
+    assert [b["id"] for b in st["bubbles"]] == ["FX-01", "FX-33"], st["bubbles"]
+
+
+@test
+def founder_backup_row_in_decider():
+    for uid in ("U1001", "U1006"):
+        d = decide(labels_with(asks_founder=True), rec_for(uid), NIGHT)
+        assert d.action == "ANSWER_FOUNDER" and d.reason == "R07F" and d.fixed_line == "FX-33", (uid, d)
+    d = decide(labels_with(asks_founder=True, interest=True), rec_for(), NIGHT)
+    assert d.action != "ANSWER_FOUNDER", d
+    d = decide(labels_with(asks_founder=True, grievance=True), rec_for(), NIGHT)
+    assert d.action == "LOG_GRIEVANCE", d
+
+
+@test
+def founder_offer_or_complaint_keeps_its_own_flow():
+    st = turn(fresh_store(), "U1001", "founder ka offer kab aayega?", now=DAY)        # Day 1 → FX-32
+    assert st["trace"]["action"] == "EARLY_TRIAL_PRICING" and "FX-33" not in [b["id"] for b in st["bubbles"]], \
+        st["trace"]
+    st = turn(fresh_store(), "U1001", "founder ne fraud kiya, refund chahiye")
+    assert st["trace"]["action"] == "LOG_GRIEVANCE" and "FX-33" not in [b["id"] for b in st["bubbles"]], \
+        st["trace"]
+    st = turn(fresh_store(), "U1001", "Stop-loss kya hota hai?")
+    assert "FX-33" not in [b["id"] for b in st["bubbles"]]
+
+
 @test
 def human_mode_silences_tanya():
     s = fresh_store()
@@ -492,7 +541,8 @@ def purchase_intent_unchanged_in_early_trial():
 @test
 def langgraph_and_plain_loop_agree():
     a, b = fresh_store(), fresh_store()
-    for msg in ["Hello", "Stop-loss kya hota hai?", "Kal Nifty upar jayega kya?", "Plan kitne ka hai?"]:
+    for msg in ["Hello", "Stop-loss kya hota hai?", "Kal Nifty upar jayega kya?", "Plan kitne ka hai?",
+                "who is the founder?"]:
         x = turn(a, "U1002", msg, use_lg="1")
         y = turn(b, "U1002", msg, use_lg="0")
         assert [q["id"] for q in x["bubbles"]] == [q["id"] for q in y["bubbles"]]
