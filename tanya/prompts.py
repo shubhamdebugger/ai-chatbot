@@ -46,10 +46,16 @@ ACTION_TEXT = {
     "ANSWER_PRICE": "He asked about price or plans. Give prices and contents ONLY from the APPROVED PRICING rows, exactly. If a RECOMMENDED PLAN is given, lead with it. If his pain is known, connect in his own words in one line. If inclusions say TO CONFIRM, do not describe contents — say the team will share full details. End by offering details or a call with the team. No pressure.",
     "BOUNDARY_LIGHT": "He is flirting or asking personal questions. Kind, light boundary: you are an AI assistant, these questions don't apply to you; then bring him back to his trading journey. No hearts, no playing along.",
     "ANSWER_EDUCATION": "Teach his question simply, in steps (up to {teach} short lines), from APPROVED KNOWLEDGE where it covers the topic; otherwise general textbook concepts only. Make it personal using KNOWN FACTS where natural. Never a view on a specific trade.",
-    "ANSWER_SUPPORT": "Answer his app/service question ONLY from APPROVED KNOWLEDGE. Do not invent steps, times or policies.",
+    "ANSWER_SUPPORT": "Answer his app/service question ONLY from APPROVED KNOWLEDGE. Do not invent steps, times or policies. If APPROVED KNOWLEDGE does not actually answer his question (only a related topic, or nothing), set covered to false — a senior will take it over.",
     "ANSWER": "Answer helpfully and briefly. If it touches the service, use only APPROVED sections.",
     "GREETING": "He just opened the app. Greet him warmly by name in one line. {promise_or_step} Keep it to 2 short lines, one question at the end.",
 }
+
+
+REPLY_SCHEMA = {"type": "object", "additionalProperties": False,
+                "properties": {"reply": {"type": "string"}, "last_promise": {"type": "string"},
+                               "asked_field": {"type": "string"}, "covered": {"type": "boolean"}},
+                "required": ["reply", "last_promise", "asked_field", "covered"]}
 
 
 def _promise_or_step(rec, day):
@@ -108,5 +114,5 @@ def build(action, rec, labels, day, knowledge_hits, addon, addon_detail, plan_ro
 
     parts.append(f"""TASK: REPLY
 Reply in {lang}. Return ONLY JSON:
-{{"reply": "<your message to him>", "last_promise": "<a concrete next step you promised him, or empty>", "asked_field": "<profile field you asked, or empty>"}}""")
+{{"reply": "<your message to him>", "last_promise": "<a concrete next step you promised him, or empty>", "asked_field": "<profile field you asked, or empty>", "covered": <true, unless the action tells you to set it false>}}""")
     return "\n\n".join(parts), [e["id"] for e in ex]

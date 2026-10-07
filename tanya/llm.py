@@ -76,14 +76,23 @@ def normalise_messages(messages):
 
 
 # ---------------------------------------------------------------- providers
-def _anthropic(model, system, messages, temperature, max_tokens, json_mode, timeout):
-    r = httpx.post(
-        "https://api.anthropic.com/v1/messages",
-        headers={"x-api-key": S.api_key("anthropic"), "anthropic-version": "2023-06-01",
-                 "content-type": "application/json"},
-        json={"model": model, "max_tokens": max_tokens, "system": system,
-              "messages": messages, "temperature": temperature},
-        timeout=timeout)
+_NO_TEMPERATURE = set()   # models that rejected 'temperature' once (e.g. claude-sonnet-5-5) — never sent again
+
+
+def _anthropic(model, system, messages, temperature, max_tokens, json_mode, timeout, schema=None):
+    body = {"model": model, "max_tokens": max_tokens, "system": system, "messages": messages}
+    if model not in _NO_TEMPERATURE:
+        body["temperature"] = temperature
+    if schema:
+        # structured outputs: the answer is guaranteed to be JSON matching the schema
+        body["output_config"] = {"format": {"type": "json_schema", "schema": schema}}
+    headers = {"x-api-key": S.api_key("anthropic"), "anthropic-version": "2023-06-01",
+               "content-type": "application/json"}
+    r = httpx.post("https://api.anthropic.com/v1/messages", headers=headers, json=body, timeout=timeout)
+    if r.status_code == 400 and "temperature" in r.text and "temperature" in body:
+        _NO_TEMPERATURE.add(model)             # newer models accept only their default temperature
+        body.pop("temperature")
+        r = httpx.post("https://api.anthropic.com/v1/messages", headers=headers, json=body, timeout=timeout)
     r.raise_for_status()
     j = r.json()
     text = "".join(b.get("text", "") for b in j.get("content", []) if b.get("type") == "text")
@@ -91,7 +100,7 @@ def _anthropic(model, system, messages, temperature, max_tokens, json_mode, time
     return text, u.get("input_tokens", 0), u.get("output_tokens", 0)
 
 
-def _openai(model, system, messages, temperature, max_tokens, json_mode, timeout):
+def _openai(model, system, messages, temperature, max_tokens, json_mode, timeout, schema=None):
     body = {"model": model, "messages": [{"role": "system", "content": system}] + messages,
             "max_completion_tokens": max_tokens, "temperature": temperature}
     if json_mode:
@@ -108,7 +117,7 @@ def _openai(model, system, messages, temperature, max_tokens, json_mode, timeout
     return text, u.get("prompt_tokens", 0), u.get("completion_tokens", 0)
 
 
-def _google(model, system, messages, temperature, max_tokens, json_mode, timeout):
+def _google(model, system, messages, temperature, max_tokens, json_mode, timeout, schema=None):
     contents = [{"role": "model" if m["role"] == "assistant" else "user", "parts": [{"text": m["content"]}]}
                 for m in messages]
     cfg = {"temperature": temperature, "maxOutputTokens": max_tokens}
@@ -132,7 +141,7 @@ def _google(model, system, messages, temperature, max_tokens, json_mode, timeout
     return text, u.get("promptTokenCount", 0), u.get("candidatesTokenCount", 0) + u.get("thoughtsTokenCount", 0)
 
 
-def _mock(model, system, messages, temperature, max_tokens, json_mode, timeout):
+def _mock(model, system, messages, temperature, max_tokens, json_mode, timeout, schema=None):
     from .llm_mock import mock_complete
     text = mock_complete(system, messages)
     return text, len(system) // 4, len(text) // 4
@@ -149,35 +158,42 @@ class LLM:
         self.forced = provider if provider and S.api_key(provider) else None
 
     def call(self, purpose, tier, system, messages, json_mode=False, temperature=0.0,
-             timeout=30, max_tokens=1200) -> LLMResult:
-        """purpose: understand | reply | check | note | audit. tier: fast | detailed."""
+             timeout=30, max_tokens=1200, schema=None) -> LLMResult:
+        """purpose: understand | reply | check | note | audit. tier: fast | detailed.
+        schema: JSON schema of the answer (json_mode) — Anthropic enforces it (structured outputs)."""
         # Attempts in order: main model, its 'backup' model (config models.<provider>.backup), then the
         # fallback provider. A busy/overloaded answer (429/5xx, timeout) is retried once on the same model.
+        # An answer without readable JSON also moves on to the next attempt (its cost is still counted).
         attempts = []
         for provider in [self.forced or S.provider] + ([S.fallback_provider] if S.fallback_provider else []):
             for model in (S.model(provider, tier), S.raw["models"][provider].get("backup")):
                 if model and (provider, model) not in attempts:
                     attempts.append((provider, model))
         last = LLMResult(False, purpose=purpose, error="no provider tried")
+        spent = 0.0                                    # cost of answers we could not use
         for provider, model in attempts:
             for attempt in range(2):
                 t0 = time.time()
                 try:
                     text, tin, tout = _PROVIDERS[provider](model, system, normalise_messages(messages),
-                                                           temperature, max_tokens, json_mode, timeout)
+                                                           temperature, max_tokens, json_mode, timeout,
+                                                           schema=schema if json_mode else None)
                     p_in, p_out = S.price(model)
                     cost = (tin * p_in + tout * p_out) / 1_000_000 * self.usd_inr
                     res = LLMResult(True, text, provider, model, purpose, tin, tout,
-                                    int((time.time() - t0) * 1000), round(cost, 4))
+                                    int((time.time() - t0) * 1000), round(cost + spent, 4))
                     if json_mode:
                         res.data = parse_json(text) or {}
                         if not res.data:
                             res.ok = False
                             res.error = "no JSON in answer"
+                            spent += cost
+                            last = res
+                            break                      # try the next model / provider
                     return res
                 except Exception as e:  # network, timeout, HTTP error — retry if busy, else next attempt
                     last = LLMResult(False, "", provider, model, purpose, ms=int((time.time() - t0) * 1000),
-                                     error=f"{type(e).__name__}: {str(e)[:200]}")
+                                     cost_inr=round(spent, 4), error=f"{type(e).__name__}: {str(e)[:200]}")
                     status = getattr(getattr(e, "response", None), "status_code", None)
                     busy = status in (429, 500, 502, 503, 504) or isinstance(e, httpx.TimeoutException)
                     if not busy or attempt:

@@ -96,6 +96,7 @@ def history_for_prompt(rec, n=None):
 
 # ------------------------------------------------------------------ facts
 SYSTEM_SOURCES = {"crm_field", "agent_note", "app"}
+CUSTOMER_SOURCES = {"chat", "voice"}           # he said it himself (chat message or voice call)
 
 
 def set_fact(rec, field, value, his_words, source, msg_no, now, stated=True, confidence=0.9):
@@ -105,7 +106,7 @@ def set_fact(rec, field, value, his_words, source, msg_no, now, stated=True, con
              "at": iso(now), "stated": stated, "confidence": confidence, "note": "", "history": []}
     if old:
         entry["history"] = (old.get("history", []) + [{k: old[k] for k in ("value", "source", "at")}])[-5:]
-        if old["source"] in SYSTEM_SOURCES and source == "chat" and \
+        if old["source"] in SYSTEM_SOURCES and source in CUSTOMER_SOURCES and \
                 old["value"].strip().lower() != str(value).strip().lower():
             # The agent's note is never changed; the difference is kept for the agent (§9.4)
             rec["conflicts"].append({"field": field, "agent_value": old["value"], "agent_source": old["source"],
@@ -127,7 +128,7 @@ def fact_lines(rec) -> list:
     """Known facts for the prompt — 'never ask these again'."""
     out = []
     for k, v in rec["facts"].items():
-        who = {"chat": "he told Tanya", "agent_note": "agent note", "crm_field": "CRM", "app": "app"}.get(v["source"], v["source"])
+        who = {"chat": "he told Tanya", "voice": "he told Tanya on a call", "agent_note": "agent note", "crm_field": "CRM", "app": "app"}.get(v["source"], v["source"])
         words = f' — his words: "{v["his_words"]}"' if v.get("his_words") else ""
         out.append(f"{k}: {v['value']} ({who}, {stamp(parse(v['at']))}){words}")
     return out

@@ -117,6 +117,16 @@ class FileStore:
         until = self.db.get("human", {}).get(conversation_id)
         return bool(until) and datetime.fromisoformat(until) > now
 
+    def once(self, key, days=30) -> bool:
+        """True the first time a key is seen (webhook retries are dropped). Dev store: no expiry."""
+        with self.lock:
+            seen = self.db.setdefault("once", {})
+            if key in seen:
+                return False
+            seen[key] = 1
+            self._flush()
+            return True
+
 
 class RedisStore:
     """Production memory. Needs REDIS_URL in .env (e.g. redis://localhost:6379/0), AOF on."""
@@ -195,6 +205,10 @@ class RedisStore:
 
     def human_flag(self, conversation_id, now) -> bool:
         return bool(self.r.exists(f"tanya:human:{conversation_id}"))
+
+    def once(self, key, days=30) -> bool:
+        """True the first time a key is seen (webhook retries are dropped)."""
+        return bool(self.r.set(f"tanya:once:{key}", "1", nx=True, ex=int(days * 86400)))
 
 
 def make_store():

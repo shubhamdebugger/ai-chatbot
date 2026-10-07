@@ -109,9 +109,137 @@
     "hindi": "TG Level एक SEBI-पंजीकृत रिसर्च एनालिस्ट है (पंजीकरण संख्या {sebi_reg_no})। पंजीकरण किसी प्रदर्शन या रिटर्न की गारंटी नहीं है।"
   },
   "FX-19": {
-    "moment": "Support question not covered by approved knowledge - passed to team with case number",
-    "english": "I don't want to guess on this. I've passed it to our team — case number {case_no}. They will get back to you.",
-    "hinglish": "Is par main andaaza nahi lagana chahti. Maine ise team ko bhej diya hai — case number {case_no}. Woh aapse sampark karenge.",
-    "hindi": "इस पर मैं अंदाज़ा नहीं लगाना चाहती। मैंने इसे टीम को भेज दिया है — केस नंबर {case_no}। वो आपसे संपर्क करेंगे।"
+    "moment": "Support question is not covered by the approved knowledge base - case opened, and a senior will contact the customer",
+    "english": "I don't have the proper information on this, so I'm forwarding it to my senior — your case number is {case_no}. A senior will contact you {when}.",
+    "hinglish": "Mere paas iski poori jaankari nahi hai, isliye main ise apne senior ko forward kar rahi hoon — aapka case number {case_no} hai. Senior {when} aapse sampark karenge.",
+    "hindi": "मेरे पास इसकी पूरी जानकारी नहीं है, इसलिए मैं इसे अपने सीनियर को भेज रही हूँ — आपका केस नंबर {case_no} है। सीनियर {when} आपसे संपर्क करेंगे।"
+  },
+  "FX-20": {
+    "moment": "Money-guarantee question (sure-shot / double paise)",
+    "english": "Nahi, paise double hone ki guarantee koi SEBI-registered research provider nahi de sakta. Markets uncertain hote hain, aur ‘sure-shot’ ya ‘100%’ ka wada warning sign hai.",
+    "hinglish": "Nahi, paise double hone ki guarantee koi SEBI-registered research provider nahi de sakta. Markets uncertain hote hain, aur ‘sure-shot’ ya ‘100%’ ka wada warning sign hai.",
+    "hindi": "Nahi, paise double hone ki guarantee koi SEBI-registered research provider nahi de sakta. Markets uncertain hote hain, aur ‘sure-shot’ ya ‘100%’ ka wada warning sign hai."
+  },
+  "FX-32": {
+    "moment": "Plans/pricing question on trial Day 1-2 - prices held back until Day 3 (R13E)",
+    "status": "DRAFT",
+    "english": "TG Levels has various plans, models, and offerings designed to suit different needs. Our founder, Tushar Ghone, will personally explain the available options and offers to you. So, stay tuned — you’ll hear from him soon with all the details.",
+    "hinglish": "TG Levels mein alag-alag plans, models aur offerings available hain, jo different needs ke according hain. In sabhi options aur offers ke baare mein hamare founder, Tushar Ghone, aapko personally explain karenge. Isliye stay tuned — aapko jald hi unki taraf se poori details milengi.",
+    "hindi": "TG Levels में अलग-अलग प्लान, मॉडल और ऑफ़रिंग्स उपलब्ध हैं, जो विभिन्न आवश्यकताओं के अनुसार हैं। इन सभी विकल्पों और ऑफ़र्स के बारे में हमारे फ़ाउंडर, तुषार घोणे, आपको व्यक्तिगत रूप से विस्तार से बताएंगे। इसलिए जुड़े रहिए — आपको जल्द ही उनकी ओर से पूरी जानकारी मिलेगी।"
+  },
+  "FX-24": {
+    "moment": "Zero-AI small talk - greeting (after the disclosure)",
+    "status": "DRAFT",
+    "variants": {
+      "A": {
+        "english": "Namaste {name}! How can I help you today?",
+        "hinglish": "Namaste {name} ji! Aaj aapki kya madad karun?",
+        "hindi": "नमस्ते {name} जी! आज आपकी क्या मदद करूँ?"
+      },
+      "B": {
+        "english": "Hello {name}! Tell me, what would you like to learn today?",
+        "hinglish": "Hello {name} ji 😊 Boliye, aaj kya seekhna chahenge?",
+        "hindi": "हेलो {name} जी 😊 बोलिए, आज क्या सीखना चाहेंगे?"
+      },
+      "C": {
+        "english": "Hi {name}! I'm right here — ask me anything.",
+        "hinglish": "Hi {name} ji! Main yahin hoon — koi bhi sawaal poochiye.",
+        "hindi": "हाय {name} जी! मैं यहीं हूँ — कोई भी सवाल पूछिए।"
+      }
+    }
+  },
+  "FX-25": {
+    "moment": "Zero-AI small talk - greeting in a new session, after a knowledge topic earlier",
+    "status": "DRAFT",
+    "english": "Namaste {name}! Last time we talked about {topic} — shall we continue from there, or something new?",
+    "hinglish": "Namaste {name} ji! Pichli baar humne {topic} par baat ki thi — wahin se aage badhein ya kuch naya?",
+    "hindi": "नमस्ते {name} जी! पिछली बार हमने {topic} पर बात की थी — वहीं से आगे बढ़ें या कुछ नया?"
+  },
+  "FX-26": {
+    "moment": "Zero-AI small talk - greeting again in the same session",
+    "status": "DRAFT",
+    "english": "Yes, go ahead — I'm right here.",
+    "hinglish": "Ji, boliye — main yahin hoon.",
+    "hindi": "जी, बोलिए — मैं यहीं हूँ।"
+  },
+  "FX-27": {
+    "moment": "Zero-AI small talk - how are you",
+    "status": "DRAFT",
+    "variants": {
+      "A": {
+        "english": "I'm all set to help you 😊 Tell me, how are you doing?",
+        "hinglish": "Main ekdum ready hoon aapki madad ke liye 😊 Aap sunaiye, aap kaise hain?",
+        "hindi": "मैं आपकी मदद के लिए पूरी तरह तैयार हूँ 😊 आप बताइए, आप कैसे हैं?"
+      },
+      "B": {
+        "english": "All good! How about you — what's happening in trading for you today?",
+        "hinglish": "Sab badhiya! Aap bataiye, aaj trading mein kya chal raha hai?",
+        "hindi": "सब बढ़िया! आप बताइए, आज ट्रेडिंग में क्या चल रहा है?"
+      }
+    }
+  },
+  "FX-28": {
+    "moment": "Zero-AI small talk - what are you doing",
+    "status": "DRAFT",
+    "variants": {
+      "A": {
+        "english": "Just here, ready for your questions! What would you like to learn today?",
+        "hinglish": "Bas yahin hoon, aapke sawaalon ke liye taiyaar! Aaj kya seekhna chahenge?",
+        "hindi": "बस यहीं हूँ, आपके सवालों के लिए तैयार! आज क्या सीखना चाहेंगे?"
+      },
+      "B": {
+        "english": "I was waiting for you 😊 Tell me, which topic should we talk about?",
+        "hinglish": "Aapka intezaar kar rahi thi 😊 Boliye, kis topic par baat karein?",
+        "hindi": "आपका इंतज़ार कर रही थी 😊 बोलिए, किस विषय पर बात करें?"
+      }
+    }
+  },
+  "FX-29": {
+    "moment": "Zero-AI small talk - bye (the session does NOT end)",
+    "status": "DRAFT",
+    "variants": {
+      "A": {
+        "english": "Alright {name}, take care! Whenever you have a question, I'm right here.",
+        "hinglish": "Theek hai {name} ji, apna khayal rakhiye! Jab bhi kuch poochna ho, main yahin hoon.",
+        "hindi": "ठीक है {name} जी, अपना ख्याल रखिए! जब भी कुछ पूछना हो, मैं यहीं हूँ।"
+      },
+      "B": {
+        "english": "Bye {name}! See you tomorrow 😊",
+        "hinglish": "Bye {name} ji! Kal phir milte hain 😊",
+        "hindi": "बाय {name} जी! कल फिर मिलते हैं 😊"
+      }
+    }
+  },
+  "FX-30": {
+    "moment": "Zero-AI small talk - thanks",
+    "status": "DRAFT",
+    "variants": {
+      "A": {
+        "english": "You're welcome! Let me know if you'd like to ask anything else.",
+        "hinglish": "Aapka swagat hai! Aur kuch poochna ho toh bata dijiye.",
+        "hindi": "आपका स्वागत है! और कुछ पूछना हो तो बता दीजिए।"
+      },
+      "B": {
+        "english": "Happy to help 😊 Any other question?",
+        "hinglish": "Khushi hui madad karke 😊 Koi aur sawaal?",
+        "hindi": "मदद करके खुशी हुई 😊 कोई और सवाल?"
+      }
+    }
+  },
+  "FX-31": {
+    "moment": "Zero-AI small talk - sorry",
+    "status": "DRAFT",
+    "variants": {
+      "A": {
+        "english": "Oh, no problem! Go ahead — what did you want to ask?",
+        "hinglish": "Arre, koi baat nahi! Boliye, kya poochna chahte hain?",
+        "hindi": "अरे, कोई बात नहीं! बोलिए, क्या पूछना चाहते थे?"
+      },
+      "B": {
+        "english": "No problem at all 😊 Go ahead.",
+        "hinglish": "Koi dikkat nahi ji 😊 Aage batayiye.",
+        "hindi": "कोई दिक्कत नहीं जी 😊 आगे बताइए।"
+      }
+    }
   }
 }

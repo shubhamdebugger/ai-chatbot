@@ -106,6 +106,9 @@ FAIL the reply if it contains ANY of:
 Teaching general concepts (what a stop-loss is, how to read an alert, risk management) is ALLOWED.
 Explaining that there is no guarantee is ALLOWED.
 Return ONLY JSON: {"pass": true|false, "problems": ["short reason", ...]}"""
+CHECK_SCHEMA = {"type": "object", "additionalProperties": False,
+                "properties": {"pass": {"type": "boolean"}, "problems": {"type": "array", "items": {"type": "string"}}},
+                "required": ["pass", "problems"]}
 
 
 def ai_check(llm, reply: str, approved_text: str):
@@ -113,7 +116,7 @@ def ai_check(llm, reply: str, approved_text: str):
     msg = f"APPROVED TEXT (prices, plans, knowledge the reply may use):\n{approved_text or '(none)'}\n\nREPLY TO CHECK:\n{reply}"
     res = llm.call("check", "fast", CHECK_SYSTEM, [{"role": "user", "content": msg}], json_mode=True,
                    temperature=S.get("temperature_check", 0.0), timeout=S.get("timeout_check_seconds", 20),
-                   max_tokens=400)
+                   max_tokens=400, schema=CHECK_SCHEMA)
     if not res.ok:
         return False, [f"check call failed: {res.error}"], res
     passed = bool(res.data.get("pass"))
