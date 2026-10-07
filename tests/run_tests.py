@@ -1897,6 +1897,26 @@ def agent_quiet_10_min_gives_the_chat_back_to_tanya():
     s4.release_conversation("C53", DAY + timedelta(minutes=2))
     assert s4.agent_idle_get("C53") is None
 
+
+@test
+def staff_bot_command_from_crm_releases_the_chat():
+    """07-Oct: the CRM keeps '#bot' out of the chat and sends 'tanya-release' instead -> chat back to Tanya."""
+    import os
+    from tanya.crm_adapter import SupportBoardAdapter
+    old = os.environ.get("CRM_WEBHOOK_SECRET")
+    os.environ["CRM_WEBHOOK_SECRET"] = "s3cret"
+    try:
+        a = SupportBoardAdapter()
+        ev = a.parse_webhook({"function": "tanya-release", "key": "s3cret",
+                              "data": {"conversation_id": "71102", "conversation_user_id": "70774", "user_id": "58982"}}, {})
+        assert ev.kind == "release_to_bot" and ev.conversation_id == "71102" and ev.user_id == "70774"
+        assert a.parse_webhook({"function": "tanya-release", "key": "wrong", "data": {"conversation_id": "1"}}, {}) is None
+    finally:
+        if old is None:
+            os.environ.pop("CRM_WEBHOOK_SECRET", None)
+        else:
+            os.environ["CRM_WEBHOOK_SECRET"] = old
+
 if __name__ == "__main__":
     timeutil.set_clock(None)
     width = max(len(n) for _, n, _ in RESULTS)

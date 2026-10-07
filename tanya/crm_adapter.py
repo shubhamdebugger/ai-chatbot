@@ -188,6 +188,11 @@ class SupportBoardAdapter(CRMAdapter):
         if fn == "conversation-status-updated" and str(data.get("status_code")) in CLOSED_STATUS:
             # staff archived / deleted the chat (crm functions_messages.php:285-327): HUMAN mode ends (v4 §7)
             return IntakeEvent("", "conversation_closed", "", str(data.get("conversation_id", "")), "", payload)
+        if fn == "tanya-release":
+            # staff typed #bot: the CRM keeps the command out of the chat (never shown to the customer) and only
+            # tells us (crm/include/functions_messages.php, sb_send_message)
+            return IntakeEvent("", "release_to_bot", str(data.get("conversation_user_id", "")),
+                               str(data.get("conversation_id", "")), "", payload)
         if fn != "message-sent":                            # every other CRM event: nothing to do
             return IntakeEvent(str(data.get("id", "")), "status_change", str(data.get("user_id", "")),
                                str(data.get("conversation_id", "")), "", payload)
