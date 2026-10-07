@@ -13,7 +13,7 @@ _RULES = {
     "grievance": r"(refund|complaint|fraud|cheat|dhokha|paise wapas|late aaye|late aate|late alert|scam)",
     "wants_person": r"(insaan se|human|agent se|kisi se baat|real person se baat|team se baat|talk to (a )?person)",
     "purchase_intent": r"(plan lena hai|plan le leta|subscribe karna|payment kaise|kharidna hai|buy the plan|want to buy|join karna hai|le leta hoon)",
-    "interest": r"(kitne ka|price|fees|kitna hai|cost|plan mein kya|what is included|kya milega|₹)",
+    "interest": r"(kitne ka|pric|fees|kitna hai|cost|plan mein kya|what is included|kya milega|₹|\bplans\b|plan kya|subscription)",
     "timing_objection": r"(salary|next week|agle mahine|next month|baad mein lunga)",
     "prefers_call": r"(call karna|call karo|call kar|time nahi|phone pe|phone par baat|call me)",
     "abuse": r"(idiot|stupid|bewakoof|bakwas|pagal|shut up)",
