@@ -1951,6 +1951,55 @@ def typing_kept_while_a_failed_reply_waits_for_its_retry():
     assert s.typing_get("C96") is None
 
 
+@test
+def company_info_appends_url_and_handles_guardrail_block():
+    from tanya.company_info import WEBSITE_LINE, add_website_line, is_company_query
+
+    # 1. Detection: company / address / office / contact (incl. misspellings) yes; trading questions no
+    for t in ("address kya hai", "adress bhejo", "company k bareme batao", "office kahan hai", "office kaha hai",
+              "where is your office", "location kya hai", "contact details", "contact number kya hai",
+              "SEBI registration address kya hai"):
+        assert is_company_query(t), t
+    for t in ("Kal Nifty upar jayega kya?", "Stop-loss kya hota hai?", "Trading levels kya hain?",
+              "nifty ka level kya hai", "options trading kya hota hai", "company ka share price kya hai",
+              "kaun si company ka stock lu"):
+        assert not is_company_query(t), t
+
+    # 2. Appended to the same AI bubble, no extra bubble
+    b1 = [{"id": "AI", "kind": "ai", "text": "Hamara office Ghansoli, Navi Mumbai mein hai."}]
+    assert add_website_line(b1, "address kya hai", "ANSWER")
+    assert len(b1) == 1 and b1[0]["id"] == "AI" and b1[0]["text"].endswith("\n" + WEBSITE_LINE)
+
+    # 3. Not added twice
+    b2 = [{"id": "AI", "kind": "ai", "text": "Details https://tglevels.com/ par uplabdh hain."}]
+    assert not add_website_line(b2, "address kya hai", "ANSWER")
+    assert b2[0]["text"] == "Details https://tglevels.com/ par uplabdh hain."
+    assert not add_website_line(b1, "address kya hai", "ANSWER") and b1[0]["text"].count("tglevels.com") == 1
+
+    # 4. Guard replaced the reply with FX-12: FX-12 text and id kept, the line appended to it
+    fx12 = PACK.fixed("FX-12", "hinglish")
+    b3 = [{"id": "FX-12", "kind": "fixed", "text": fx12, "blocked_text": "..."}, {"id": "FX-17", "kind": "fixed", "text": "d"}]
+    assert add_website_line(b3, "office kahan hai", "ANSWER")
+    assert b3[0]["id"] == "FX-12" and b3[0]["text"] == fx12 + "\n" + WEBSITE_LINE and b3[1]["text"] == "d"
+
+    # 5. Nothing to append to, unrelated question, or a trade refusal -> no change
+    b4 = []
+    assert not add_website_line(b4, "company k bareme batao", "ANSWER") and b4 == []
+    b5 = [{"id": "AI", "kind": "ai", "text": "Stop-loss ek risk management tool hai."}]
+    assert not add_website_line(b5, "Stop-loss kya hota hai?", "ANSWER_EDUCATION")
+    assert not add_website_line(b5, "office kahan hai", "REFUSE_AND_TEACH")
+    assert "tglevels.com" not in b5[0]["text"]
+
+
+@test
+def kb_has_only_the_approved_addresses():
+    texts = {c["chunk_id"]: c["text"] for c in KB.chunks}
+    assert not any("Rupa Solitaire" in t or "Flat No. 502" in t for t in texts.values())
+    a02 = " ".join(t for k, t in texts.items() if k.startswith("A02#"))
+    assert "Office address: Ghansoli, Navi Mumbai." in a02
+    assert "Airoli, Thane, Maharashtra – 400708" in a02
+    assert any("Airoli, Thane, Maharashtra – 400708" in t for k, t in texts.items() if k.startswith("A04#"))
+
 
 @test
 def chat_only_for_numbers_on_the_ai_list():

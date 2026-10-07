@@ -18,7 +18,7 @@ Questions this answers: company kab bani · CIN number kya hai · private limite
 3. Date of incorporation: 5 March 2025
 4. Corporate Identity Number (CIN): U66190MH2025PTC442160
 5. Issued by: Registrar of Companies, Central Registration Centre, Ministry of Corporate Affairs
-6. Registered address as per MCA: Flat No. 502, Plot No. 96, Sector-8A, Airoli, Thane – 400708, Maharashtra
+6. Registered address as per MCA:  Airoli, Thane – 400708, Maharashtra
 
 ## A05.2 Company Incorporation – What It Does NOT Mean
 

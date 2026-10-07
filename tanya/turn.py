@@ -16,6 +16,7 @@ import re
 from . import memory_model as mm
 from . import policy
 from .brief import lead_brief
+from .company_info import add_website_line
 from .content_pack import PACK
 from .decider import Decision, FIXED_ONLY, COUNTS_AS_EDUCATION, NO_EMOJI, decide
 from .guard_input import injection, mask
@@ -348,6 +349,9 @@ def n_guard(st):
             and any(b["kind"] == "ai" for b in st["bubbles"]):
         st["bubbles"].append({"id": "FX-17", "kind": "fixed", "text": PACK.fixed("FX-17", lang)})
         rec["session"]["disclaimer_shown"] = bool(S.get("disclaimer_once_per_session", True))
+    # company / address / contact question → official website as the last line, after every check (also after FX-12)
+    if st["kind"] == "message":
+        add_website_line(st["bubbles"], st.get("masked") or st.get("text", ""), d.action)
     return st
 
 
