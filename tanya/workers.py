@@ -315,7 +315,7 @@ class Persister:
 
     def write(self, events):
         try:
-            self.conn.ping(reconnect=True)          # MySQL restarted or idle-timeout: reconnect, don't fail forever
+            self.conn.ping()                        # MySQL restarted or idle-timeout: reconnect, don't fail forever
         except Exception:
             self.conn = self._connect()
         with self.conn.cursor() as c:
@@ -665,7 +665,10 @@ class Housekeeping:
         if self.conn is None:
             self.conn = Persister._connect()
         else:
-            self.conn.ping(reconnect=True)
+            try:
+                self.conn.ping()
+            except Exception:
+                self.conn = Persister._connect()
         return self.conn
 
     def run(self):
