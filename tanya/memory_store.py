@@ -225,6 +225,16 @@ class FileStore:
                 d["retry_after"] = until_epoch
                 self._flush()
 
+    def once(self, key, days=30) -> bool:
+        """True the first time a key is seen (webhook retries are dropped). Dev store: no expiry."""
+        with self.lock:
+            seen = self.db.setdefault("once", {})
+            if key in seen:
+                return False
+            seen[key] = 1
+            self._flush()
+            return True
+
 
 class RedisStore:
     """Production memory. Needs REDIS_URL in .env (e.g. redis://localhost:6379/0), AOF on."""
@@ -429,6 +439,10 @@ class RedisStore:
             d = _j.loads(raw)
             d["retry_after"] = until_epoch
             self.r.hset("tanya:summary_dirty", conversation_id, _j.dumps(d))
+
+    def once(self, key, days=30) -> bool:
+        """True the first time a key is seen (webhook retries are dropped)."""
+        return bool(self.r.set(f"tanya:once:{key}", "1", nx=True, ex=int(days * 86400)))
 
 
 def make_store():

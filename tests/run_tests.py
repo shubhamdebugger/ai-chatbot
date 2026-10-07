@@ -3,7 +3,9 @@
 Plain English: each test sets up a situation and checks that the CODE does the right thing —
 masking, the decider table, limits, hand-offs, the SEBI net, ₹ figures, emoji rule, memory rules,
 temperature, and that LangGraph and the plain loop give the same answer.
-Optional: REDIS_URL set → Redis memory and streams tested; MYSQL_* set → persister tested.
+Optional, never against the live stores (.env is loaded, so REDIS_URL / MYSQL_DB are always set):
+  TEST_REDIS_URL=redis://localhost:6379/15  → Redis memory and streams tested (that db is FLUSHED)
+  TEST_MYSQL=1                              → persister tested against MYSQL_* (writes U1001 rows)
 """
 import os
 import sys
@@ -50,6 +52,19 @@ def test(fn):
     except Exception as e:
         RESULTS.append(("FAIL", fn.__name__, f"{type(e).__name__}: {e}\n{traceback.format_exc(limit=2)}"))
     return fn
+
+
+def offline(fn):
+    """.env sets MYSQL_DB; voice code that reads/writes orch_* tables must not touch it in tests."""
+    def run():
+        old = os.environ.pop("MYSQL_DB", None)
+        try:
+            fn()
+        finally:
+            if old is not None:
+                os.environ["MYSQL_DB"] = old
+    run.__name__ = fn.__name__
+    return run
 
 
 def fresh_store():
@@ -529,6 +544,9 @@ def support_without_approved_answer_opens_case():
     s = fresh_store()
     st = turn(s, "U1005", "App mein notification aaya par trade nahi dikha")
     assert st["trace"]["action"] == "SUPPORT_CASE" and any(b["id"] == "FX-19" for b in st["bubbles"]), st["trace"]
+    # one senior callback, tracked like every promise (FX-19 text, due time) — not a second one from the promise check
+    cbs = [e for e in st["events"] if e["type"] == "callback"]
+    assert len(cbs) == 1 and cbs[0]["kind"] == "senior" and cbs[0]["promise"] and cbs[0]["due_at"], cbs
 
 
 @test
@@ -551,8 +569,10 @@ def langgraph_and_plain_loop_agree():
 
 @test
 def knowledge_search_finds_lesson():
-    hits = KB.search("SL kya hota hai?")
-    assert hits and hits[0]["doc_id"] == "LES-002", hits[:2]
+    hits = KB.search("position size kaise nikale?", categories=["Lesson"])
+    assert hits and hits[0]["doc_id"] == "H06", hits[:2]
+    refund = KB.search("refund chahiye", categories=["FAQ"])
+    assert refund and refund[0]["doc_id"] == "D01", refund[:2]
 
 
 @test
@@ -672,6 +692,7 @@ def tanya_handoff_enters_human_mode_with_deadline():
     starts = [e for e in _evs(s) if e["type"] == "handoff" and e.get("op") == "start"]
     cbs = [e for e in _evs(s) if e["type"] == "callback"]
     assert starts and cbs and cbs[0]["conversation_id"] == "C70" and cbs[0]["promise"] and cbs[0]["due_at"], cbs
+    assert len(cbs) == 1, cbs                                       # one promise, one callback (graph and plain)
     assert s.typing_get("C70") is None                                # typing never left on after a turn
     assert a.briefs == {}                    # 06-Oct: no "Ms Tanya - Lead Brief" note in the CRM (crm_lead_brief_note off)
 
@@ -1079,6 +1100,351 @@ def qdrant_sync_writes_only_when_collection_changed():
             os.environ["KNOWLEDGE_BACKEND"] = orig[3]
 
 
+@test
+def voice_tool_speaks_only_approved_text():
+    from tanya.knowledge import for_voice
+    out = for_voice(KB.search("refund chahiye"))
+    assert out["found"] and out["results"][0]["title"] == KB.search("refund chahiye")[0]["title"]
+    placeholder = dict(KB.search("refund chahiye")[0], status="PLACEHOLDER - not approved")
+    out = for_voice([placeholder])
+    assert out == {**out, "found": False, "results": []}, out
+
+
+def _voice_payload(ctx_secret, sbc="555", iat=1791008700, start=1791008705):
+    from tanya.voice import sign_context
+    sig = sign_context("9001", "777", "555", str(iat), ctx_secret)
+    return {"type": "post_call_transcription", "data": {
+        "agent_id": "agent_test", "conversation_id": "conv_test1", "status": "done",
+        "metadata": {"start_time_unix_secs": start, "call_duration_secs": 86, "cost": 301,
+                     "termination_reason": "Client disconnected: 1000"},
+        "analysis": {"transcript_summary": "User asked about stop-loss.", "call_successful": "success",
+                     "call_summary_title": "Stop-loss question"},
+        "conversation_initiation_client_data": {"dynamic_variables": {
+            "pwa_uid": "9001", "sb_user_id": "777", "sb_conversation_id": sbc,
+            "ctx_iat": str(iat), "ctx_sig": sig}},
+        "transcript": [
+            {"role": "user", "message": "Stop loss kya hai? mera number 9876543210 hai", "time_in_call_secs": 3},
+            {"role": "agent", "message": "", "time_in_call_secs": 4,
+             "tool_calls": [{"tool_name": "search_knowledge", "params_as_json": '{"query": "stop loss kya hai"}'}]},
+            {"role": "agent", "message": "Stop-loss vo price hai...", "time_in_call_secs": 6}]}}
+
+
+@test
+def voice_call_end_kind_labelled():
+    from tanya.voice import end_kind
+    assert end_kind("end_call tool was called.", 570, 600) == "agent_end_call"
+    assert end_kind("Client disconnected: 1000", 86, 600) == "user_hangup"
+    assert end_kind("Client disconnected: 1000", 603, 600) == "time_limit_client"
+    assert end_kind("Maximum duration of 645 seconds exceeded", 645, 600) == "time_limit_server"
+    assert end_kind("", 30, 600) == "other"
+
+
+@test
+@offline
+def voice_time_limit_without_callback_flagged_for_agents():
+    from tanya.crm_adapter import ConsoleAdapter
+    from tanya.voice import handle_post_call
+    os.environ.update(TANYA_VOICE_CTX_SECRET="ctxsecret", ELEVENLABS_AGENT_ID="agent_test")
+    payload = _voice_payload("ctxsecret")
+    payload["data"]["conversation_id"] = "conv_time_limit"
+    payload["data"]["metadata"]["call_duration_secs"] = 92
+    payload["data"]["conversation_initiation_client_data"]["dynamic_variables"]["call_limit_secs"] = 90
+    s, crm = fresh_store(), ConsoleAdapter()
+    out = handle_post_call(payload, s, crm, NIGHT)
+    import json as _j
+    evs = [_j.loads(l) for l in s.events_path.read_text(encoding="utf-8").splitlines()]
+    call = [e for e in evs if e["type"] == "voice_call"][0]
+    assert call["ended_reason"] == "time_limit_client: Client disconnected: 1000", call["ended_reason"]
+    fu = [e for e in evs if e["type"] == "callback"]
+    assert out["followup"] and len(fu) == 1 and fu[0]["kind"] == "followup", fu   # never 'senior': nothing promised
+    assert fu[0]["slot"]["reason"] == "call_time_limit" and fu[0]["slot"]["sb_conversation_id"] == "555"
+
+
+@test
+@offline
+def voice_live_start_and_end_post_once_each():
+    from tanya.crm_adapter import ConsoleAdapter
+    from tanya.voice import handle_post_call
+    from tanya.voice_live import call_ended, call_started
+    os.environ.update(TANYA_VOICE_CTX_SECRET="ctxsecret", ELEVENLABS_AGENT_ID="agent_test")
+    s, crm = fresh_store(), ConsoleAdapter()
+    ctx = {"pwa_uid": "9001", "sb_user_id": "777", "sb_conversation_id": "555"}
+    payload = _voice_payload("ctxsecret")
+    sig = payload["data"]["conversation_initiation_client_data"]["dynamic_variables"]["ctx_sig"]
+    assert call_started(s, crm, ctx, sig, "conv_test1", NIGHT)["chat_message"]
+    assert call_started(s, crm, ctx, sig, "conv_test1", NIGHT)["duplicate"], "PWA retry → no second message"
+    assert call_ended(s, crm, ctx, sig, "conv_test1", NIGHT, duration_secs=372)["chat_message"]
+    out = handle_post_call(payload, s, crm, NIGHT)          # webhook after the PWA already said "ended"
+    assert out["stored"] and "chat_message" not in out, out
+    assert crm.outbox["555"] == ["📞 Voice call with Ms Tanya started",
+                                 "✅ Voice call with Ms Tanya completed · 6m 12s"], crm.outbox
+
+
+@test
+def voice_completed_message_says_what_was_promised():
+    from tanya.voice_live import done_text
+    assert done_text(372, "kal subah 10 baje ke baad") == (
+        "✅ Voice call with Ms Tanya completed · 6m 12s\n📞 Hamare senior aapko kal subah 10 baje ke baad call karenge.")
+    assert done_text(None, "") == "✅ Voice call with Ms Tanya completed"
+
+
+@test
+def voice_webhook_signature_checked():
+    import hashlib
+    import hmac as _h
+    from tanya.voice import verify_webhook
+    raw, t = b'{"type":"post_call_transcription"}', "1791008800"
+    good = _h.new(b"whsec", f"{t}.".encode() + raw, hashlib.sha256).hexdigest()
+    assert verify_webhook(raw, f"t={t},v0={good}", "whsec", now_ts=1791008810)
+    assert not verify_webhook(raw + b" ", f"t={t},v0={good}", "whsec", now_ts=1791008810)   # body changed
+    assert not verify_webhook(raw, f"t={t},v0={good}", "other", now_ts=1791008810)          # wrong secret
+    assert not verify_webhook(raw, f"t={t},v0={good}", "whsec", now_ts=1791008800 + 3600)   # too old
+    assert not verify_webhook(raw, "", "whsec")
+
+
+@test
+@offline
+def voice_call_stored_without_a_crm_note():
+    from tanya.crm_adapter import ConsoleAdapter
+    from tanya.voice import handle_post_call
+    os.environ.update(TANYA_VOICE_CTX_SECRET="ctxsecret", ELEVENLABS_AGENT_ID="agent_test")
+    s, crm = fresh_store(), ConsoleAdapter()
+    out = handle_post_call(_voice_payload("ctxsecret"), s, crm, NIGHT)
+    assert out == {"ok": True, "stored": True, "chat_message": True}, out
+    import json as _j
+    ev = [_j.loads(l) for l in s.events_path.read_text(encoding="utf-8").splitlines()][-1]
+    assert ev["type"] == "voice_call" and ev["user_id"] == "777" and ev["sb_conversation_id"] == "555"
+    assert "9876543210" not in _j.dumps(ev), "phone number must be masked"
+    assert ev["kb_queries"] and "stop loss" in ev["kb_queries"][0]
+    assert ev["summary"] == "User asked about stop-loss." and not crm.notes, "summary in orch_voice_calls, no CRM note"
+    assert crm.outbox["555"] == ["✅ Voice call with Ms Tanya completed · 1m 26s"], "only the completed message"
+    assert handle_post_call(_voice_payload("ctxsecret"), s, crm, NIGHT) == {"ok": True, "duplicate": True}
+
+
+@test
+@offline
+def voice_forged_or_stale_context_writes_nothing():
+    from tanya.crm_adapter import ConsoleAdapter
+    from tanya.voice import handle_post_call
+    os.environ.update(TANYA_VOICE_CTX_SECRET="ctxsecret", ELEVENLABS_AGENT_ID="agent_test")
+    s, crm = fresh_store(), ConsoleAdapter()
+    forged = _voice_payload("ctxsecret")
+    forged["data"]["conversation_initiation_client_data"]["dynamic_variables"]["sb_conversation_id"] = "999"
+    assert handle_post_call(forged, s, crm, NIGHT)["ignored"] == "no_valid_context"
+    stale = _voice_payload("ctxsecret", start=1791008700 + 3600)          # call long after the token
+    assert handle_post_call(stale, s, crm, NIGHT)["ignored"] == "no_valid_context"
+    assert not crm.notes and not s.events_path.exists()
+
+
+@test
+@offline
+def voice_call_teaches_facts_with_consent_only():
+    from tanya.crm_adapter import ConsoleAdapter
+    from tanya.voice import handle_post_call
+    os.environ.update(TANYA_VOICE_CTX_SECRET="ctxsecret", ELEVENLABS_AGENT_ID="agent_test")
+    for consent, expect in ((True, 2), (False, 0)):
+        s = fresh_store()
+        s.save(mm.new_record("777", {"name": "Ravi", "consent": consent}, NIGHT))
+        p = _voice_payload("ctxsecret")
+        p["data"]["transcript"].append({"role": "user", "message": "Main beginner hoon, nifty options seekhna hai",
+                                        "time_in_call_secs": 9})
+        out = handle_post_call(p, s, ConsoleAdapter(), NIGHT, LLMX)
+        rec = s.get("777")
+        assert out["facts"] == expect, out
+        assert rec["session_notes"][-1]["session"] == "voice:conv_test1"
+        if consent:
+            assert rec["facts"]["experience"]["source"] == "voice" and rec["facts"]["segment"]["value"] == "options"
+        else:
+            assert not rec["facts"], "no consent: nothing stored"
+
+
+@test
+def crm_webhook_tells_staff_from_customer():
+    from tanya.crm_adapter import SupportBoardAdapter
+    os.environ.update(CRM_WEBHOOK_SECRET="whk", TANYA_AGENT_ID="900")
+    a = SupportBoardAdapter()
+
+    def hook(sender, key="whk"):     # the shape sb_webhooks('SBMessageSent', ...) sends — no user_type
+        return {"function": "message-sent", "key": key, "data": {
+            "user_id": sender, "message_id": 55, "message": "hi", "conversation_user_id": "47066",
+            "conversation_id": "71132", "conversation_status_code": 2, "conversation_source": ""}}
+    ev = a.parse_webhook(hook("47066"), {})
+    assert ev.kind == "user_message" and ev.user_id == "47066" and ev.conversation_id == "71132"
+    ev = a.parse_webhook(hook("267"), {})                                 # an agent replied
+    assert ev.kind == "staff_message" and ev.user_id == "47066"
+    assert a.parse_webhook(hook("900"), {}) is None, "Tanya's own message echoed back"
+    assert a.parse_webhook(hook("47066", key="wrong"), {}) is None
+
+
+@test
+def turn_keeps_the_crm_conversation_id():
+    timeutil.set_clock(NIGHT)
+    for use_lg in ("1", "0"):                            # LangGraph drops state keys it does not declare
+        os.environ["USE_LANGGRAPH"] = use_lg
+        s = fresh_store()
+        graph.run_turn({"user_id": "U1002", "conversation_id": "71132", "kind": "message", "text": "Hello",
+                        "now": NIGHT, "store": s, "llm": LLMX, "kb": KB, "seed_fn": lambda u: PACK.test_users.get(u)})
+        assert s.get("U1002")["conversation_id"] == "71132", f"USE_LANGGRAPH={use_lg}"
+
+
+@test
+def senior_callback_promises_only_working_hours():
+    from tanya.voice_context import callback_window
+    at = lambda d, h, m=0: datetime(2026, 10, d, h, m, tzinfo=timeutil.IST)   # Oct 2026: 5 = Monday
+    assert callback_window(at(5, 11))[1] == "aaj shaam 7 baje se pehle"
+    assert callback_window(at(5, 18, 30))[1] == "kal subah 10 baje ke baad"           # under an hour left
+    assert callback_window(at(7, 8))[1] == "aaj subah 10 baje ke baad"               # Wed before opening
+    assert callback_window(at(9, 18, 30))[1] == "Monday subah 10 baje ke baad"       # Friday evening
+    assert callback_window(at(10, 12))[1] == "Monday subah 10 baje ke baad"          # Saturday
+    assert callback_window(at(11, 12))[1] == "kal subah 10 baje ke baad"             # Sunday → Monday
+    assert callback_window(at(9, 18, 30))[0] == at(12, 19)                            # due Monday 7 PM
+
+
+@test
+def senior_callback_respects_his_time_inside_team_hours_only():
+    from tanya.voice_context import hours_text, preferred_slot
+    at = lambda d, h, m=0: datetime(2026, 10, d, h, m, tzinfo=timeutil.IST)   # Oct 2026: 5 = Monday
+    now = at(5, 11, 39)
+    assert hours_text() == "Mon–Fri, 10 AM–7 PM"
+    assert preferred_slot(now, "", None) is None                                     # no time → old behaviour
+    ok, slot, due, say = preferred_slot(now, "today", 17)
+    assert ok and say == "aaj shaam 5 baje" and due == at(5, 18)
+    ok, slot, _, say = preferred_slot(now, "today", 23)                              # the 11 PM case
+    assert not ok and slot == at(6, 10) and say == "kal subah 10 baje"
+    ok, slot, _, say = preferred_slot(now, "tomorrow", 8)                            # before opening
+    assert not ok and slot == at(6, 10)
+    ok, _, _, say = preferred_slot(now, "", 10)                                      # 10 AM already gone → tomorrow
+    assert ok and say == "kal subah 10 baje"
+    ok, slot, _, say = preferred_slot(at(9, 12), "saturday", 11)                     # weekend → Monday
+    assert not ok and slot == at(12, 10) and say == "Monday subah 10 baje"
+    ok, _, _, _ = preferred_slot(now, "today", 12)                                   # 21 min away: too soon
+    assert not ok
+
+
+@test
+def senior_callback_outside_hours_offers_first_books_after_yes():
+    import json as _j
+    from tanya import voice_context as vc
+    from tanya.crm_adapter import ConsoleAdapter
+    s, crm = fresh_store(), ConsoleAdapter()
+    ctx = {"pwa_uid": "9001", "sb_user_id": "777", "sb_conversation_id": "555"}
+    now = datetime(2026, 10, 5, 11, 39, tzinfo=timeutil.IST)
+    real = vc.open_callbacks
+    try:
+        vc.open_callbacks = lambda c: []
+        out = vc.request_callback(s, crm, ctx, "support", "रात के 11:00 बजे", True, now,
+                                  preferred_day="today", preferred_hour=23)
+        assert not out["created"] and out["outside_hours"] and out["offer"] == "kal subah 10 baje"
+        assert "preferred_day='tomorrow'" in out["say"] and "preferred_hour=10" in out["say"]
+        assert not s.events_path.exists() and not crm.notes, "nothing booked before he agrees"
+        out = vc.request_callback(s, crm, ctx, "support", "रात के 11:00 बजे", True, now,
+                                  preferred_day="tomorrow", preferred_hour=10)
+        assert out["created"] and out["promised"] == "kal subah 10 baje"
+        ev = [_j.loads(l) for l in s.events_path.read_text(encoding="utf-8").splitlines()][-1]
+        assert ev["when_text"] == "kal subah 10 baje" and ev["slot"]["due_by"].startswith("2026-10-06T11:00")
+    finally:
+        vc.open_callbacks = real
+
+
+@test
+def senior_callback_needs_his_yes_and_is_booked_once():
+    import json as _j
+    from tanya import voice_context as vc
+    from tanya.crm_adapter import ConsoleAdapter
+    s, crm = fresh_store(), ConsoleAdapter()
+    ctx = {"pwa_uid": "9001", "sb_user_id": "777", "sb_conversation_id": "555"}
+    real = vc.open_callbacks
+    try:
+        vc.open_callbacks = lambda c: []
+        out = vc.request_callback(s, crm, ctx, "refund", "", False, DAY)
+        assert not out["created"] and not s.events_path.exists(), "no yes → nothing booked"
+        out = vc.request_callback(s, crm, ctx, "refund", "shaam ko 9876543210 pe", True, DAY)
+        assert out["created"] and out["promised"] == "aaj shaam 7 baje se pehle"
+        ev = [_j.loads(l) for l in s.events_path.read_text(encoding="utf-8").splitlines()][-1]
+        assert ev["type"] == "callback" and ev["kind"] == "senior" and ev["user_id"] == "777"
+        assert ev["slot"]["reason"] == "refund" and "9876543210" not in _j.dumps(ev)
+        title, note = crm.notes["555"][0]
+        assert "Senior callback" in title and "YES" in note and not crm.outbox
+        vc.open_callbacks = lambda c: [{"promised": "aaj shaam 7 baje se pehle"}]
+        again = vc.request_callback(s, crm, ctx, "refund", "", True, DAY)
+        assert not again["created"] and again["already_requested"] and len(crm.notes["555"]) == 1
+    finally:
+        vc.open_callbacks = real
+
+
+@test
+@offline
+def post_call_books_the_callback_the_agent_forgot():
+    from tanya import voice_context as vc
+    from tanya.crm_adapter import ConsoleAdapter
+    from tanya.voice import handle_post_call
+    os.environ.update(TANYA_VOICE_CTX_SECRET="ctxsecret", ELEVENLABS_AGENT_ID="agent_test")
+    real = vc.open_callbacks
+    try:
+        vc.open_callbacks = lambda c: []
+        for said_yes, expect in (("true", "created"), ("false", None)):
+            s = fresh_store()
+            p = _voice_payload("ctxsecret")
+            p["data"]["analysis"]["data_collection_results"] = {
+                "senior_callback_confirmed": {"value": said_yes}, "callback_reason": {"value": "payment"}}
+            out = handle_post_call(p, s, ConsoleAdapter(), DAY)
+            assert out.get("senior_callback") == expect, out
+    finally:
+        vc.open_callbacks = real
+
+
+def _app_snapshot():
+    return {"name": "Ravi", "joined_at": "2026-09-20",
+            "trial": {"group": "trial", "active_days_used": 1, "trial_days": 3, "days_left": 2},
+            "payment": {"status": "Pending", "amount": "2999.00"},
+            "trial_answers": {"goal": "both", "capital": "1l", "price_offered": "3m", "holdback_reason": None},
+            "activity": {"active_days_7d": 3, "trade_calls_viewed_7d": 12, "quiz_attempts_14d": 5,
+                         "quiz_correct_14d": 3, "quiz_graded_14d": 5, "app_installed": False}}
+
+
+@test
+def caller_brief_has_his_whole_picture_but_nothing_internal():
+    from tanya.voice_context import BRIEF_MAX_CHARS, caller_brief
+    rec = rec_for("U1001")
+    mm.set_fact(rec, "main_pain", "overtrading", "roz 9876543210 trades karta hoon", "chat", 3, NIGHT)
+    rec["journey"]["last_promise"] = "risk tools ka demo"
+    rec["session_notes"].append({"session": 1, "at": "2026-09-28T20:00:00+05:30", "lines": ["Asked about Pro plan."]})
+    rec["signals"]["purchase_intent"] = {"at": "2026-09-28T20:00:00+05:30", "evidence": "plan lena hai"}
+    calls = [{"started_at": "2026-09-27T19:00:00", "title": "Refund question", "summary": "Asked refund policy."}]
+    b = caller_brief(rec, _app_snapshot(), calls, NIGHT)
+    for want in ("NAME: Amit", "Free trial — 1 of 3", "2 left", "Pending ₹2,999", "learn + get trade calls",
+                 "1 lakh", "3-month plan", "12 trade calls", "3/5 correct", "app not installed",
+                 "segment: Nifty options", "overtrading", "Asked about Pro plan.", "risk tools ka demo",
+                 "Refund question", "STILL UNKNOWN"):
+        assert want in b, f"{want!r} missing from brief:\n{b}"
+    assert "9876543210" not in b, "masked"
+    assert "plan lena hai" not in b and "emperature" not in b, "internal signals stay out of the browser"
+    cold = caller_brief(None, {}, [], NIGHT)
+    assert "NAME: unknown" in cold and "NO CHAT HISTORY" in cold
+    rec["session_notes"] = [{"session": i, "at": "2026-09-28T20:00:00+05:30", "lines": ["x" * 160] * 3}
+                            for i in range(10)]
+    assert len(caller_brief(rec, _app_snapshot(), calls * 3, NIGHT)) <= BRIEF_MAX_CHARS
+
+
+@test
+def voice_tools_trust_only_the_signed_context():
+    from tanya.voice import CTX_MAX_AGE_SECS, TOOL_CTX_MAX_AGE_SECS, sign_context, verify_context
+    from tanya.voice_context import recent_chat, save_fact
+    iat = "1791008700"
+    dyn = {"pwa_uid": "9001", "sb_user_id": "U1002", "sb_conversation_id": "",
+           "ctx_iat": iat, "ctx_sig": sign_context("9001", "U1002", "", iat, "ctxsecret")}
+    later = int(iat) + 40 * 60                                     # 40 minutes into a long call
+    assert not verify_context(dyn, later, "ctxsecret", CTX_MAX_AGE_SECS)
+    ctx = verify_context(dyn, later, "ctxsecret", TOOL_CTX_MAX_AGE_SECS)
+    assert ctx == {"pwa_uid": "9001", "sb_user_id": "U1002", "sb_conversation_id": ""}
+    assert not verify_context({**dyn, "sb_user_id": "U1001"}, later, "ctxsecret", TOOL_CTX_MAX_AGE_SECS)
+    s = fresh_store()
+    turn(s, "U1002", "Hello")
+    assert save_fact(s, ctx, "capital_band", "5 lakh", "mere paas 5 lakh hai", NIGHT) == {"saved": True}
+    assert s.get("U1002")["facts"]["capital_band"]["source"] == "voice"
+    assert not save_fact(s, ctx, "password", "x", "", NIGHT)["saved"]
+    chat = recent_chat(s, None, ctx, 5)
+    assert chat["source"] == "memory" and chat["messages"][0]["text"] == "Hello"
 # ---------------------------------------------------------------- zero-AI small talk (R-SMALLFX)
 @test
 def smalltalk_greeting_first_ever_is_disclosure_only():
@@ -1191,13 +1557,15 @@ def reconciler_recovers_missed_webhooks_once_in_order():
 
 
 # ---------------------------------------------------------------- optional: Redis and MySQL
-if os.environ.get("REDIS_URL"):
+if os.environ.get("TEST_REDIS_URL"):
     @test
     def failed_message_keeps_customer_order_other_customers_continue():
         """PT9: a customer's later message is never answered before his earlier failed one."""
         import redis
         from tanya.streams import Intake, StreamWorker, partition
-        r = redis.Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+        url = os.environ["TEST_REDIS_URL"]
+        assert url != os.environ.get("REDIS_URL"), "TEST_REDIS_URL must not be the live Redis (it is flushed)"
+        r = redis.Redis.from_url(url, decode_responses=True)
         r.flushdb()
         done, fail = [], {"A1": 1}                                     # A1 fails once, then works
 
@@ -1219,15 +1587,17 @@ if os.environ.get("REDIS_URL"):
             StreamWorker(r, [p], handler, consumer="t").run_once(block_ms=100)
         assert "B2" not in done and "C1" in done, done                 # B2 held, other customer served
 
-if os.environ.get("REDIS_URL"):
+if os.environ.get("TEST_REDIS_URL"):
     @test
     def redis_store_and_streams():
         import redis
         from tanya.memory_store import RedisStore, VersionConflict
         from tanya.streams import Intake, StreamWorker
-        r = redis.Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+        url = os.environ["TEST_REDIS_URL"]
+        assert url != os.environ.get("REDIS_URL"), "TEST_REDIS_URL must not be the live Redis (it is flushed)"
+        r = redis.Redis.from_url(url, decode_responses=True)
         r.flushdb()
-        s = RedisStore(os.environ["REDIS_URL"])
+        s = RedisStore(url)
         s.last_reply_set("C1", 500); s.last_reply_set("C1", 499)          # only moves forward
         assert s.last_reply_get("C1") == 500 and s.last_reply_get("C2") == 0
         it = Intake(r)                                                   # newest customer message received per chat
@@ -1253,7 +1623,7 @@ if os.environ.get("REDIS_URL"):
         assert got and got[0]["event_id"] == "e1"
         assert r.xlen("tanya:persist") > 0
 
-if os.environ.get("MYSQL_DB"):
+if os.environ.get("TEST_MYSQL") == "1":
     @test
     def persister_writes_orch_tables():
         from tanya.workers import Persister
@@ -1277,6 +1647,42 @@ if os.environ.get("MYSQL_DB"):
             assert c.fetchone()[0] == 1
             c.execute("SELECT state FROM orch_callbacks WHERE user_id='U1001'")
             assert c.fetchone()[0] == "requested"
+
+@test
+def voice_abuse_three_strikes_end_the_call_and_reset_per_call():
+    from tanya.voice_context import report_abuse, ABUSE_WARNING, ABUSE_FINAL
+    s = fresh_store()
+    ctx = {"pwa_uid": "9001", "sb_user_id": "777", "sb_conversation_id": "555"}
+    r1, r2, r3 = (report_abuse(s, ctx, "1791008700") for _ in range(3))
+    for r, n, act, lines in ((r1, 1, "warn", ABUSE_WARNING), (r2, 2, "warn", ABUSE_WARNING), (r3, 3, "end", ABUSE_FINAL)):
+        assert (r["strike"], r["action"]) == (n, act), r
+        assert {k: r[f"say_{k}"] for k in ("english", "hinglish", "hindi")} == lines, r
+    assert "end_call" in r3["then"] and "end_call" not in r1["then"]
+    assert report_abuse(s, ctx, "1791008700")["action"] == "end", "stays ended after the 3rd"
+    assert report_abuse(s, ctx, "1791009999")["strike"] == 1, "a new call starts at zero"
+    assert report_abuse(s, {**ctx, "pwa_uid": "9002"}, "1791008700")["strike"] == 1, "other caller unaffected"
+
+
+@test
+def voice_abuse_strikes_are_stored_with_the_call():
+    from tanya.voice import build_event
+    p = _voice_payload("ctxsecret")
+    p["data"]["transcript"] += [{"role": "agent", "message": "", "time_in_call_secs": 9,
+                                 "tool_calls": [{"tool_name": "report_abuse", "params_as_json": "{}"}]}] * 3
+    ev = build_event(p["data"], {"pwa_uid": "9001", "sb_user_id": "777", "sb_conversation_id": "555"}, NIGHT)
+    assert ev["abuse_strikes"] == 3
+
+
+@test
+def voice_summary_is_short_and_keeps_the_ending():
+    from tanya.voice import short_summary, SHORT_SUMMARY_WORDS
+    full = ("The user asked what TG Level is and what the plans cost. " * 6 +
+            "Finally the user accepted a senior callback for trial details.")
+    got = short_summary({}, full)
+    assert len(got.split()) <= SHORT_SUMMARY_WORDS and got.endswith((".", "…")), got
+    assert short_summary({}, "Short one.") == "Short one."
+    an = {"data_collection_results": {"short_summary": {"value": "  Asked about plans;  booked a senior callback. "}}}
+    assert short_summary(an, full) == "Asked about plans; booked a senior callback."
 
 
 @test
@@ -1387,10 +1793,10 @@ def typing_kept_while_a_failed_reply_waits_for_its_retry():
     from tanya.crm_adapter import ConsoleAdapter
     from tanya.workers import TurnHandler
     os.environ["USE_LANGGRAPH"] = "0"
-    if not os.environ.get("REDIS_URL"):
-        return                                   # the reply retry (PT3) lives in Redis
+    if not os.environ.get("TEST_REDIS_URL"):
+        return                                   # the reply retry (PT3) lives in Redis (test db only)
     from tanya.memory_store import RedisStore
-    s = RedisStore(os.environ["REDIS_URL"])
+    s = RedisStore(os.environ["TEST_REDIS_URL"])
     for k in ("tanya:typing:C96", "tanya:retry:961", "tanya:done:961", "tanya:posted:961:0"):
         s.r.delete(k)
 

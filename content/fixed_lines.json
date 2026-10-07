@@ -109,10 +109,10 @@
     "hindi": "TG Level एक SEBI-पंजीकृत रिसर्च एनालिस्ट है (पंजीकरण संख्या {sebi_reg_no})। पंजीकरण किसी प्रदर्शन या रिटर्न की गारंटी नहीं है।"
   },
   "FX-19": {
-    "moment": "Support question not covered by approved knowledge - passed to team with case number",
-    "english": "I don't want to guess on this. I've passed it to our team — case number {case_no}. They will get back to you.",
-    "hinglish": "Is par main andaaza nahi lagana chahti. Maine ise team ko bhej diya hai — case number {case_no}. Woh aapse sampark karenge.",
-    "hindi": "इस पर मैं अंदाज़ा नहीं लगाना चाहती। मैंने इसे टीम को भेज दिया है — केस नंबर {case_no}। वो आपसे संपर्क करेंगे।"
+    "moment": "Support question is not covered by the approved knowledge base - case opened, and a senior will contact the customer",
+    "english": "I don't have the proper information on this, so I'm forwarding it to my senior — your case number is {case_no}. A senior will contact you {when}.",
+    "hinglish": "Mere paas iski poori jaankari nahi hai, isliye main ise apne senior ko forward kar rahi hoon — aapka case number {case_no} hai. Senior {when} aapse sampark karenge.",
+    "hindi": "मेरे पास इसकी पूरी जानकारी नहीं है, इसलिए मैं इसे अपने सीनियर को भेज रही हूँ — आपका केस नंबर {case_no} है। सीनियर {when} आपसे संपर्क करेंगे।"
   },
   "FX-20": {
     "moment": "Money-guarantee question (sure-shot / double paise)",

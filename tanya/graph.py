@@ -33,10 +33,10 @@ NODES = {k: _timed(k, f) for k, f in {
 class TurnState(TypedDict, total=False):
     """Everything one turn carries from step to step."""
     user_id: str
+    conversation_id: str
     kind: str
     text: str
     event_id: str
-    conversation_id: str
     now: Any
     store: Any
     llm: Any
@@ -63,6 +63,7 @@ class TurnState(TypedDict, total=False):
     past: list
     bubbles: list
     ai_data: dict
+    callback_emitted: bool      # compose already filed the callback for its promise (n_after must not add one)
     golden_used: list
     guard: dict
     notes: list

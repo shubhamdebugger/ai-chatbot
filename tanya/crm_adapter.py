@@ -89,15 +89,20 @@ class CRMAdapter:
         """Assign / flag the conversation for staff (department or agent, per A8)."""
         raise NotImplementedError
 
+    def add_agent_note(self, user_id: str, conversation_id: str, title: str, text: str) -> str:
+        """A new note on the conversation, visible to agents only (voice call summaries). Returns note id."""
+        raise NotImplementedError
+
 
 class ConsoleAdapter(CRMAdapter):
     """Dev console: an in-memory 'CRM' so the brain can be tested without the real one."""
 
     def __init__(self):
         self.outbox = {}      # conversation_id -> list of posted texts
-        self.notes = {}       # conversation_id -> {note_id: text}
+        self.summary_notes = {}  # conversation_id -> the single 'Conversation Summary' text
         self.briefs = {}      # user_id -> text
         self.handoffs = []
+        self.notes = {}       # conversation_id -> list of (title, text)  (agent notes, e.g. voice call summaries)
 
     def parse_webhook(self, payload, headers):
         return IntakeEvent(payload.get("event_id", ""), payload.get("kind", "user_message"),
@@ -115,7 +120,7 @@ class ConsoleAdapter(CRMAdapter):
         return text in self.outbox.get(conversation_id, [])
 
     def write_summary_note(self, conversation_id, text):
-        self.notes.setdefault(conversation_id, {})["summary"] = text
+        self.summary_notes[conversation_id] = text
         return "summary"
 
     def get_user(self, user_id):
@@ -131,6 +136,10 @@ class ConsoleAdapter(CRMAdapter):
     def hand_to_human(self, conversation_id, reason):
         self.handoffs.append((conversation_id, reason))
         return True
+
+    def add_agent_note(self, user_id, conversation_id, title, text):
+        self.notes.setdefault(conversation_id, []).append((title, text))
+        return f"note-{conversation_id}-{len(self.notes[conversation_id])}"
 
 
 class SupportBoardAdapter(CRMAdapter):
@@ -283,6 +292,12 @@ class SupportBoardAdapter(CRMAdapter):
     def hand_to_human(self, conversation_id, reason):
         self._call("department", conversation_id=conversation_id, department=self.human_dept)
         return True
+
+    def add_agent_note(self, user_id, conversation_id, title, text):
+        # TO CONFIRM (A4): same add-note function as the Lead Brief; notes are agent-only in SB.
+        res = self._call("note_add", conversation_id=conversation_id, user_id=self.tanya_agent,
+                         name=title, message=text)
+        return str(res)
 
 
 def make_adapter():

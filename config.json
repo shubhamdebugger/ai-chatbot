@@ -50,6 +50,11 @@
     "owner": "Open - Architecture 21.2.1",
     "note": "Team calling hours end (IST)"
   },
+  "calling_days": {
+    "value": ["Mon", "Tue", "Wed", "Thu", "Fri"],
+    "owner": "Business - support team",
+    "note": "Days the team calls customers back (voice 'senior will call you' callbacks)"
+  },
   "interest_expiry_hours": {
     "value": 72,
     "owner": "Claude - Architecture 8",

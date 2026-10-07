@@ -52,8 +52,8 @@ def n_load(st):
         if seed is None:                       # not in memory and not loaded yet (Architecture §7.7.5)
             seed, st["cold_start"] = {"consent": False}, True
         rec = mm.new_record(uid, seed, now)
-    if st.get("conversation_id"):              # the CRM chat this event belongs to: the HUMAN gate and
-        rec["conversation_id"] = str(st["conversation_id"])   # replies must use it, not the user id
+    if st.get("conversation_id") and str(st["conversation_id"]) != str(uid):
+        rec["conversation_id"] = str(st["conversation_id"])   # the CRM chat he wrote in: HUMAN gate, replies, notes
     st["rec"] = rec
     st["new_session"] = mm.ensure_session(rec, now)
     mm.ensure_day(rec, now)
@@ -214,6 +214,18 @@ def _callback_event(st, cb, reason, promise):
         reason=reason, promise=promise, due_at=iso(callback_due(st["now"])), **cb)
 
 
+def _support_case(st, rec, lang, now) -> dict:
+    """No approved answer to his support question: a case for the team and a senior callback.
+    Returns the FX-19 values (case number, honest contact time)."""
+    case_no = open_case(rec, st["store"], "support", st["masked"], now)
+    _ev(st, "case", case_no=case_no, kind="support", text=st["masked"])
+    when = when_phrase(now, lang)
+    # the senior callback is emitted with the FX-19 text once that line is built (_callback_event: conversation,
+    # source message, due time) — one tracked callback, not a second one from the promise check
+    st["_support_cb"] = request_callback(rec, "senior", now, when)
+    return {"case_no": case_no, "when": when}
+
+
 def n_compose(st):
     rec, now, d = st["rec"], st["now"], st["decision"]
     lang = st["labels"].get("language") or rec["profile"].get("language", "hinglish")
@@ -244,8 +256,8 @@ def n_compose(st):
             vals["case_no"] = open_case(rec, st["store"], "grievance", st["masked"], now)
             _ev(st, "case", case_no=vals["case_no"], kind="grievance", text=st["masked"])
         if fx == "FX-19":
-            vals["case_no"] = open_case(rec, st["store"], "support", st["masked"], now)
-            _ev(st, "case", case_no=vals["case_no"], kind="support", text=st["masked"])
+            vals.update(_support_case(st, rec, lang, now))
+            pending_cb.append(st.pop("_support_cb"))
         if fx in ("FX-07", "FX-08", "FX-14"):
             vals["when"] = when_phrase(now, lang)
         if fx in ("FX-07", "FX-08"):
@@ -283,7 +295,13 @@ def n_compose(st):
         _usage(st, res)
         st["golden_used"] = ex_ids
         reply = (res.data or {}).get("reply", "").strip() if res.ok else ""
-        if reply:
+        if reply and d.action == "ANSWER_SUPPORT" and (res.data or {}).get("covered") is False:
+            # the closest knowledge does not answer it → never guess: case + senior callback (FX-19)
+            st["decision"] = d = Decision("SUPPORT_CASE", "R17-NOTCOVERED", fixed_line="FX-19")
+            B.append({"id": "FX-19", "kind": "fixed",
+                      "text": PACK.fixed("FX-19", lang, name=name, **_support_case(st, rec, lang, now))})
+            _callback_event(st, st.pop("_support_cb"), "FX-19", B[-1]["text"])
+        elif reply:
             st["ai_data"] = res.data
             B.append({"id": "AI", "kind": "ai", "text": reply})
         else:
