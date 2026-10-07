@@ -64,9 +64,10 @@ def smalltalk_category(text: str):
     return None
 
 
-def human_takeover(rec, now, by="staff"):
-    """A staff reply arrived → HUMAN mode at once (v4 rule)."""
-    rec["mode"] = {"state": "HUMAN", "since": iso(now), "by": by}
+def human_takeover(rec, now, by="staff", conversation_id=None):
+    """A staff reply arrived → HUMAN mode at once (v4 rule), for the chat the staff member wrote in."""
+    rec["mode"] = {"state": "HUMAN", "since": iso(now), "by": by,
+                   "conversation_id": str(conversation_id or rec.get("conversation_id", ""))}
 
 
 def release_to_bot(rec, now, by="staff"):
@@ -78,6 +79,8 @@ def mode_is_human(rec, now) -> bool:
     m = rec.get("mode", {})
     if m.get("state") != "HUMAN":
         return False
+    if m.get("conversation_id") and m["conversation_id"] != str(rec.get("conversation_id", "")):
+        return False                           # staff took over another of his chats, not this one (PT8)
     hours = S.get("human_mode_release_hours", 12)
     if (now - parse(m["since"])).total_seconds() > hours * 3600:
         release_to_bot(rec, now, by="timeout")
@@ -90,6 +93,11 @@ def gate(rec, store, now, injection_flag: bool, text: str = ""):
     ks = store.killswitch()
     if ks == "stopped":
         return GATE_SILENT, None, "KILL_STOPPED"
+    released = getattr(store, "release_time", lambda c: None)(rec["conversation_id"])
+    m = rec.get("mode", {})
+    if released and m.get("state") == "HUMAN" and parse(m["since"]) <= released \
+            and str(m.get("conversation_id") or rec["conversation_id"]) == str(rec["conversation_id"]):
+        release_to_bot(rec, now, by="staff_release")    # staff closed this chat or typed #bot after taking over
     if store.human_flag(rec["conversation_id"], now) and rec["mode"].get("state") != "HUMAN":
         human_takeover(rec, now, by="webhook flag")
     if mode_is_human(rec, now) or store.human_flag(rec["conversation_id"], now):

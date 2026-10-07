@@ -1,0 +1,25 @@
+# Ms Tanya gateway behind HTTPS (K5). Caddy gets and renews the TLS certificate itself.
+# Replace tanya.example.com with the real host name and CRM_SERVER_IP with the CRM server's public IP.
+tanya.example.com {
+	# Only the CRM may call the webhook (the CRM's sb_curl does not verify certificates, so the secret 'key'
+	# in the body is the only other check — keep both).
+	@crm_webhook {
+		path /webhook/crm
+		remote_ip CRM_SERVER_IP
+	}
+	handle @crm_webhook {
+		reverse_proxy 127.0.0.1:8000
+	}
+	# Monitoring for the ops network only
+	@health {
+		path /health /health/queues
+		remote_ip 10.0.0.0/8 127.0.0.1
+	}
+	handle @health {
+		reverse_proxy 127.0.0.1:8000
+	}
+	# Everything else (dev console, /dev/*) is closed in production
+	handle {
+		respond 404
+	}
+}

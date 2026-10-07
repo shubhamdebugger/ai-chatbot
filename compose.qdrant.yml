@@ -5,7 +5,18 @@ services:
       - "127.0.0.1:6333:6333"
     volumes:
       - qdrant_data:/qdrant/storage
+      - ./qdrant-selfheal.sh:/qdrant/selfheal.sh:ro
+    # Self-healing start: a collection with a corrupted WAL (unclean Docker/WSL/machine stop) is moved aside
+    # instead of crash-looping; Tanya rebuilds it. See qdrant-selfheal.sh.
+    command: ["bash", "/qdrant/selfheal.sh"]
     restart: unless-stopped
+    stop_grace_period: 60s          # let Qdrant flush and close its WAL on `docker stop`
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/6333 && printf 'GET /readyz HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q ' 200 ' <&3"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
 
 volumes:
   qdrant_data:
