@@ -9,15 +9,15 @@ never_say: NONE
 
 # A02 – TG Levels Addresses (Correspondence, Registered, SEBI)
 
-## A02.1 TG Levels Address – Correspondence (Office)
+## A02.1 TG Levels Address – Office (Correspondence)
 
-Questions this answers: office kahan hai · aapka address kya hai · milne aa sakte hai
+Questions this answers: office kahan hai · office ka address kya hai · milne aa sakte hai · address bhejo · adress bhejo
 
-1. B Wing, Rupa Solitaire, MBP, Sector 2, Ghansoli, Navi Mumbai.
+1. Office address: Ghansoli, Navi Mumbai.
 
-## A02.2 TG Levels Address – Registered Office
+## A02.2 TG Levels Address – Registered Office / SEBI Registration Address
 
-Questions this answers: registered office kahan hai · company ka registered address
+Questions this answers: registered office kahan hai · company ka registered address · SEBI registration address kya hai
 
-1. Flat No. 502, Plot No. 96, Sector-8A, Airoli, Thane, Maharashtra – 400708.
-2. (Shown in short form on the website home page as: Sector 8, Airoli, Navi Mumbai.)
+1. Registered office / SEBI registration address: Airoli, Thane, Maharashtra – 400708.
+2. This is different from the office address (A02.1).

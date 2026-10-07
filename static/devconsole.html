@@ -70,7 +70,8 @@ const $=s=>document.querySelector(s);
 let users=[],lastTrace=null;
 async function api(path,body){const r=await fetch(path,body?{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}:{});if(!r.ok)throw new Error(await r.text());const ct=r.headers.get('content-type')||'';return ct.includes('json')?r.json():r.text();}
 function esc(s){return String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
-function bubble(role,text,tag,blocked){const d=document.createElement('div');d.className='b '+role;d.innerHTML=(tag?`<span class="tag">${esc(tag)}</span>`:'')+esc(text)+(blocked?`<span class="blocked">guard replaced: ${esc(blocked)}</span>`:'');$('#chat').appendChild(d);$('#chat').scrollTop=1e9;}
+function linkify(h){return h.replace(/https?:\/\/[^\s<>"']+[^\s<>"'.,;:!?)]/g,u=>`<a href="${u}" target="_blank" rel="noopener noreferrer">${u}</a>`)}
+function bubble(role,text,tag,blocked){const d=document.createElement('div');d.className='b '+role;d.innerHTML=(tag?`<span class="tag">${esc(tag)}</span>`:'')+linkify(esc(text))+(blocked?`<span class="blocked">guard replaced: ${esc(blocked)}</span>`:'');$('#chat').appendChild(d);$('#chat').scrollTop=1e9;}
 function uid(){return $('#user').value}
 async function load(){const d=await api('/dev/users');users=d.users;$('#prov').textContent=`provider: ${d.provider} · clock: ${d.clock}`;$('#ks').value=d.killswitch;
   $('#user').innerHTML=users.map(u=>`<option value="${u.user_id}">${u.name} — ${esc(u.about)}</option>`).join('');await show();}
