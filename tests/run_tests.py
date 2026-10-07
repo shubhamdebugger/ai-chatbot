@@ -557,10 +557,143 @@ def night_person_request_gives_honest_time():
     assert "kal subah 10 baje" in txt and s.get("U1002")["callbacks"][0]["state"] == "requested", txt
 
 
+# ---------------------------------------------------------------- early-trial pricing (R13E, FX-32)
+FX32_EN = ("TG Levels has multiple plans and offerings, and you’ll receive an exclusive offer directly from our founder, "
+           "Tushar Ghone. Please stay tuned — your exclusive offer is coming soon.")
+FX32_HINGLISH = ("TG Levels ke kai plans aur offerings hain, aur aapko hamare founder, Tushar Ghone, ki taraf se seedha ek "
+                 "exclusive offer milega. Bas thoda intezaar kijiye — aapka exclusive offer jald hi aa raha hai.")
+PRICE_QUESTIONS = ["plans kya hai?", "what are the plans?", "what are the prices?", "pricing kya hai?",
+                   "kitne ka hai?", "plan ki price kya hai?", "monthly plan kya hai?", "subscription kitne ka hai?"]
+
+
+def rec_on_day(day, uid="U1001", now=NIGHT):
+    r = rec_for(uid, now)
+    r["profile"]["trial_start"] = timeutil.iso(now.replace(hour=9, minute=0) - timedelta(days=day - 1))
+    assert mm.trial_day(r, now) == day
+    return r
+
+
+@test
+def plan_and_price_questions_label_interest():
+    from tanya.understand import understand
+    for msg in PRICE_QUESTIONS:
+        labels, _ = understand(LLMX, msg, [])
+        assert labels["labels"]["interest"]["on"], msg
+    labels, _ = understand(LLMX, "Stop-loss kya hota hai?", [])
+    assert not labels["labels"]["interest"]["on"]
+
+
+@test
+def early_trial_pricing_cutoff_day2_1530():
+    cases = [(1, "10:00", "EARLY_TRIAL_PRICING"), (1, "21:40", "EARLY_TRIAL_PRICING"),
+             (2, "10:00", "EARLY_TRIAL_PRICING"), (2, "15:29", "EARLY_TRIAL_PRICING"),
+             (2, "15:30", "ANSWER_PRICE"), (2, "16:00", "ANSWER_PRICE"), (3, "10:00", "ANSWER_PRICE")]
+    for day, at, want in cases:
+        h, m = timeutil.hm(at)
+        now = NIGHT.replace(hour=h, minute=m)
+        d = decide(labels_with(interest=True), rec_on_day(day, now=now), now)
+        assert d.action == want, (day, at, d)
+        if want == "EARLY_TRIAL_PRICING":
+            assert d.reason == "R13E" and d.fixed_line == "FX-32", (day, at, d)
+        else:
+            assert d.reason == "R13" and not d.fixed_line, (day, at, d)
+    d = decide(labels_with(interest=True), rec_on_day(2, now=NIGHT.replace(hour=15, minute=29, second=59)),
+               NIGHT.replace(hour=15, minute=29, second=59))
+    assert d.action == "EARLY_TRIAL_PRICING", d
+
+
+@test
+def pricing_day3_and_later_unchanged():
+    for day in (3, 4, 10):
+        d = decide(labels_with(interest=True), rec_on_day(day), NIGHT)
+        assert d.action == "ANSWER_PRICE" and d.reason == "R13" and d.selling_allowed, (day, d)
+
+
+@test
+def early_trial_pricing_respects_higher_rows_and_suppression():
+    assert decide(labels_with(distress=True, interest=True), rec_on_day(1), NIGHT).action == "PAUSE_SELLING"
+    assert decide(labels_with(grievance=True, interest=True), rec_on_day(1), NIGHT).action == "LOG_GRIEVANCE"
+    assert decide(labels_with(purchase_intent=True, interest=True), rec_on_day(1), NIGHT).action == \
+        "HAND_OVER_PURCHASE"
+    r = rec_on_day(1)
+    r["cases"].append({"case_no": "X", "kind": "grievance", "status": "open", "at": "", "text": ""})
+    d = decide(labels_with(interest=True), r, NIGHT)
+    assert d.action not in ("EARLY_TRIAL_PRICING", "ANSWER_PRICE"), d
+
+
+@test
+def early_trial_pricing_applies_without_consent():
+    for day in (1, 2):                                   # DAY = 11:15, before the Day 2 cutoff
+        d = decide(labels_with(interest=True), rec_on_day(day, "U1006", DAY), DAY)
+        assert d.action == "EARLY_TRIAL_PRICING" and d.reason == "R13E" and d.fixed_line == "FX-32", (day, d)
+    d = decide(labels_with(interest=True), rec_on_day(2, "U1006", NIGHT), NIGHT)   # Day 2 after 15:30
+    assert d.action == "ANSWER_ONLY" and d.reason == "R08", d
+    d = decide(labels_with(interest=True), rec_on_day(3, "U1006"), NIGHT)
+    assert d.action == "ANSWER_ONLY" and d.reason == "R08", d
+
+
+@test
+def early_trial_pricing_turn_without_consent():
+    s = fresh_store()
+    turn(s, "U1006", "Hello")
+    st = turn(s, "U1006", "what is the pricing of the plans?")
+    assert st["trace"]["action"] == "EARLY_TRIAL_PRICING", st["trace"]["action"]
+    assert [b["id"] for b in st["bubbles"]] == ["FX-32"], st["bubbles"]
+    assert st["bubbles"][0]["text"] == FX32_EN, st["bubbles"][0]["text"]       # English question
+
+
+@test
+def early_trial_pricing_turn_is_fixed_line_only():
+    for uid in ("U1001", "U1003"):                       # U1001 = Day 1, U1003 = Day 2 (11:15, before 15:30)
+        s = fresh_store()
+        turn(s, uid, "Hello", now=DAY)
+        st = turn(s, uid, "Plan kitne ka hai?", now=DAY)
+        assert mm.trial_day(s.get(uid), DAY) <= 2
+        assert st["trace"]["action"] == "EARLY_TRIAL_PRICING", st["trace"]["action"]
+        assert [b["id"] for b in st["bubbles"]] == ["FX-32"], st["bubbles"]
+        assert st["bubbles"][0]["text"] == FX32_HINGLISH, st["bubbles"][0]["text"]   # Hinglish question
+        assert [c["purpose"] for c in st["llm_calls"]] == ["understand"], st["llm_calls"]
+        assert "₹" not in st["bubbles"][0]["text"]
+
+
+@test
+def early_trial_pricing_first_message_keeps_disclosure():
+    st = turn(fresh_store(), "U1001", "what are the plans?")
+    assert [b["id"] for b in st["bubbles"]] == ["FX-01", "FX-32"], st["bubbles"]
+
+
+@test
+def pricing_turn_day2_after_cutoff_and_later_unchanged():
+    for days in (1, 2, 3):                               # first chat Day 1 21:40 → Day 2 21:40, Day 3, Day 4
+        s = fresh_store()
+        turn(s, "U1001", "Hello")
+        st = turn(s, "U1001", "Plan kitne ka hai?", now=NIGHT + timedelta(days=days))
+        ids = [b["id"] for b in st["bubbles"]]
+        assert st["trace"]["action"] == "ANSWER_PRICE" and "AI" in ids and "FX-32" not in ids, (days, ids)
+        assert "reply" in [c["purpose"] for c in st["llm_calls"]]
+
+
+@test
+def non_pricing_questions_day1_day2_unchanged():
+    s = fresh_store()
+    turn(s, "U1001", "Hello")
+    st = turn(s, "U1001", "Stop-loss kya hota hai?")
+    assert st["trace"]["action"] == "ANSWER_EDUCATION" and "FX-32" not in [b["id"] for b in st["bubbles"]]
+    st = turn(fresh_store(), "U1003", "Kal Nifty upar jayega kya?")
+    assert st["trace"]["action"] == "REFUSE_AND_TEACH", st["trace"]["action"]
+
+
+@test
+def purchase_intent_unchanged_in_early_trial():
+    st = turn(fresh_store(), "U1001", "plan lena hai")
+    assert st["trace"]["action"] == "HAND_OVER_PURCHASE" and "FX-14" in [b["id"] for b in st["bubbles"]], \
+        st["trace"]["action"]
+
+
 @test
 def langgraph_and_plain_loop_agree():
     a, b = fresh_store(), fresh_store()
-    for msg in ["Hello", "Stop-loss kya hota hai?", "Kal Nifty upar jayega kya?"]:
+    for msg in ["Hello", "Stop-loss kya hota hai?", "Kal Nifty upar jayega kya?", "Plan kitne ka hai?"]:
         x = turn(a, "U1002", msg, use_lg="1")
         y = turn(b, "U1002", msg, use_lg="0")
         assert [q["id"] for q in x["bubbles"]] == [q["id"] for q in y["bubbles"]]
@@ -1817,6 +1950,55 @@ def typing_kept_while_a_failed_reply_waits_for_its_retry():
          "text": "Stop loss kya hota hai?"})                      # redelivered: posted now, typing cleared
     assert s.typing_get("C96") is None
 
+
+@test
+def company_info_appends_url_and_handles_guardrail_block():
+    from tanya.company_info import WEBSITE_LINE, add_website_line, is_company_query
+
+    # 1. Detection: company / address / office / contact (incl. misspellings) yes; trading questions no
+    for t in ("address kya hai", "adress bhejo", "company k bareme batao", "office kahan hai", "office kaha hai",
+              "where is your office", "location kya hai", "contact details", "contact number kya hai",
+              "SEBI registration address kya hai"):
+        assert is_company_query(t), t
+    for t in ("Kal Nifty upar jayega kya?", "Stop-loss kya hota hai?", "Trading levels kya hain?",
+              "nifty ka level kya hai", "options trading kya hota hai", "company ka share price kya hai",
+              "kaun si company ka stock lu"):
+        assert not is_company_query(t), t
+
+    # 2. Appended to the same AI bubble, no extra bubble
+    b1 = [{"id": "AI", "kind": "ai", "text": "Hamara office Ghansoli, Navi Mumbai mein hai."}]
+    assert add_website_line(b1, "address kya hai", "ANSWER")
+    assert len(b1) == 1 and b1[0]["id"] == "AI" and b1[0]["text"].endswith("\n" + WEBSITE_LINE)
+
+    # 3. Not added twice
+    b2 = [{"id": "AI", "kind": "ai", "text": "Details https://tglevels.com/ par uplabdh hain."}]
+    assert not add_website_line(b2, "address kya hai", "ANSWER")
+    assert b2[0]["text"] == "Details https://tglevels.com/ par uplabdh hain."
+    assert not add_website_line(b1, "address kya hai", "ANSWER") and b1[0]["text"].count("tglevels.com") == 1
+
+    # 4. Guard replaced the reply with FX-12: FX-12 text and id kept, the line appended to it
+    fx12 = PACK.fixed("FX-12", "hinglish")
+    b3 = [{"id": "FX-12", "kind": "fixed", "text": fx12, "blocked_text": "..."}, {"id": "FX-17", "kind": "fixed", "text": "d"}]
+    assert add_website_line(b3, "office kahan hai", "ANSWER")
+    assert b3[0]["id"] == "FX-12" and b3[0]["text"] == fx12 + "\n" + WEBSITE_LINE and b3[1]["text"] == "d"
+
+    # 5. Nothing to append to, unrelated question, or a trade refusal -> no change
+    b4 = []
+    assert not add_website_line(b4, "company k bareme batao", "ANSWER") and b4 == []
+    b5 = [{"id": "AI", "kind": "ai", "text": "Stop-loss ek risk management tool hai."}]
+    assert not add_website_line(b5, "Stop-loss kya hota hai?", "ANSWER_EDUCATION")
+    assert not add_website_line(b5, "office kahan hai", "REFUSE_AND_TEACH")
+    assert "tglevels.com" not in b5[0]["text"]
+
+
+@test
+def kb_has_only_the_approved_addresses():
+    texts = {c["chunk_id"]: c["text"] for c in KB.chunks}
+    assert not any("Rupa Solitaire" in t or "Flat No. 502" in t for t in texts.values())
+    a02 = " ".join(t for k, t in texts.items() if k.startswith("A02#"))
+    assert "Office address: Ghansoli, Navi Mumbai." in a02
+    assert "Airoli, Thane, Maharashtra – 400708" in a02
+    assert any("Airoli, Thane, Maharashtra – 400708" in t for k, t in texts.items() if k.startswith("A04#"))
 
 
 @test

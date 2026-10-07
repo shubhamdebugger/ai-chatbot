@@ -11,11 +11,12 @@ from dataclasses import dataclass, field
 
 from . import memory_model as mm
 from .settings import S
+from .timeutil import hm
 
 # Actions whose whole reply is a fixed line (no AI writing)
 FIXED_ONLY = {"LIMIT_SPEND", "BOUNDARY_ABUSE", "HAND_OVER_PERSON", "LIMIT_EDUCATION",
               "HAND_OVER_PURCHASE", "BOOK_CALL", "ASKS_IF_AI", "BOUNDARY_FIRM", "LIMITED_MODE",
-              "ANSWER_GUARANTEE"}
+              "ANSWER_GUARANTEE", "EARLY_TRIAL_PRICING"}
 # Actions that count toward the 30 education questions
 COUNTS_AS_EDUCATION = {"ANSWER_EDUCATION"}
 # Actions where emoji are not allowed (Personality Guide §3.5)
@@ -71,6 +72,13 @@ def decide(labels: dict, rec: dict, now, limited: bool = False) -> Decision:
     # Kill switch 'limited': general and education only (Architecture §7.5)
     if limited and (_on(labels, "purchase_intent") or _on(labels, "interest") or _on(labels, "support_question")):
         return Decision("LIMITED_MODE", "R-LIMITED", fixed_line="FX-06")
+    # Row 13E — price / plan interest in the first trial days: no prices yet, fixed line only.
+    # Before Row 8 so it applies with or without consent; distress / open grievance still suppress it;
+    # purchase intent keeps its own row (R10).
+    if _on(labels, "interest") and not _on(labels, "purchase_intent") \
+            and not any(r != "no consent" for r in why) \
+            and _prices_hidden(rec, now):
+        return Decision("EARLY_TRIAL_PRICING", "R13E", fixed_line="FX-32")
     # Row 8 — no consent: answer only
     if not consent:
         d = Decision("ANSWER_ONLY", "R08", tier=tier)
@@ -114,6 +122,13 @@ def decide(labels: dict, rec: dict, now, limited: bool = False) -> Decision:
     d = Decision("ANSWER", "R20", tier=tier)
     _addon(d, rec, suppressed)
     return d
+
+
+def _prices_hidden(rec: dict, now) -> bool:
+    """Early trial: prices are held back before the last hidden day, and on that day until the cutoff time
+    (default Day 1, and Day 2 before 15:30 IST). At the cutoff minute prices are allowed."""
+    day, last = mm.trial_day(rec, now), S.get("early_pricing_hidden_until_trial_day", 2)
+    return day < last or (day == last and (now.hour, now.minute) < hm(S.get("early_pricing_hidden_until_time", "15:30")))
 
 
 def _addon(d: Decision, rec: dict, suppressed: bool):

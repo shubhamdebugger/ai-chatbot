@@ -28,7 +28,7 @@ Questions this answers: SEBI registration number kya hai · RA number · BSE enl
 6. Registration granted on: 13 April 2026, at Mumbai
 7. Certificate validity: from 13 April 2026 until suspended or cancelled by SEBI
 8. Registration fee paid for 5 years (to 12 April 2031); renewed by paying the SEBI fee within 3 months before that date
-9. Registered Office: Flat No. 502, Plot No. 96, Sector-8A, Airoli, Thane, Maharashtra – 400708
+9. Registered Office / SEBI registration address: Airoli, Thane, Maharashtra – 400708
 
 ## A04.4 SEBI Registration – How a Client Can Verify
 
