@@ -189,6 +189,56 @@ def recovery_check(store, adapter, intake=None, now=None):
     return recovered
 
 
+# ------------------------------------------------------------------ agent idle (07-Oct-2026)
+# An agent wrote in the chat: HUMAN mode while the agent is talking. After agent_idle_release_minutes with no new
+# agent message Tanya takes the chat back. What the agent answered stays answered: Tanya only picks up customer
+# messages written AFTER the agent's last message.
+def agent_activity(store, conversation_id, user_id, staff_message_id, now):
+    """Every staff message (re)starts the idle timer of this chat."""
+    conv = str(conversation_id)
+    due = now + timedelta(minutes=S.get("agent_idle_release_minutes", 10))
+    store.agent_idle_set(conv, {"user_id": str(user_id or ""), "last_staff_id": str(staff_message_id or ""),
+                                "at": iso(now)}, due.timestamp())
+
+
+def agent_idle_check(store, adapter, intake=None, now=None):
+    """Run every few seconds (reconcile process). Returns the conversations given back to Tanya."""
+    from .timeutil import now as tnow
+    now = now or tnow()
+    back = []
+    for conv in store.agent_idle_due(now.timestamp()):
+        e = store.agent_idle_get(conv)
+        if not e or not store.human_flag(conv, now):            # released meanwhile (#bot, chat closed, timeout)
+            store.agent_idle_clear(conv)
+            continue
+        h = store.handoff_get(conv)
+        if h and h.get("status") == "open":                      # Tanya's own handoff, no agent reply yet: that timer
+            store.agent_idle_clear(conv)                         # (FX-32 / FX-33) decides, not this one
+            continue
+        try:                                                     # the CRM is the truth: a newer agent message whose
+            if adapter.staff_replied_after(conv, e.get("last_staff_id")):   # webhook was lost keeps the agent on
+                last = adapter.last_staff_message_id(conv) if hasattr(adapter, "last_staff_message_id") else ""
+                agent_activity(store, conv, e.get("user_id"), last or e.get("last_staff_id"), now)
+                continue
+            waiting = _customer_waiting(adapter, conv, e.get("user_id"), e.get("last_staff_id")) if intake else []
+        except Exception as ex:                                  # CRM unreachable: try again next run
+            print(f"[agent-idle] check deferred conv={conv}: {type(ex).__name__}", file=sys.stderr, flush=True)
+            continue
+        store.release_conversation(conv, now)                    # also clears the timer
+        store.agent_idle_clear(conv)
+        store.emit([{"type": "mode", "user_id": e.get("user_id") or "-", "at": iso(now), "conversation_id": conv,
+                     "mode": "BOT", "by": "agent_idle"}])
+        if waiting:                                              # asked after the agent's last message: Tanya answers
+            m = waiting[-1]
+            intake.enqueue({"event_id": f"{m['id']}-resume", "kind": "user_message", "user_id": e.get("user_id"),
+                            "conversation_id": conv, "text": str(m.get("message", "")),
+                            "received_ms": int(time.time() * 1000), "source": "agent_idle"})
+        print(f"[agent-idle] BACK TO TANYA conv={conv} last_agent_msg={e.get('last_staff_id') or '-'} "
+              f"answering={'yes' if waiting else 'no'}", file=sys.stderr, flush=True)
+        back.append(conv)
+    return back
+
+
 def reseed_from_db(store, conn):
     """After a Redis loss: put every open handoff in MySQL back into the Redis deadline set."""
     n = 0

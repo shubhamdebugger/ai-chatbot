@@ -10,6 +10,16 @@
     "owner": "Tushar 25-Sep-2026",
     "note": "Only education questions count; resets 00:00 IST"
   },
+  "early_pricing_hidden_until_trial_day": {
+    "value": 2,
+    "owner": "Open - early-trial pricing restriction",
+    "note": "Plan/price questions before this trial day, and on it until early_pricing_hidden_until_time, get FX-32 (no prices) instead of ANSWER_PRICE; Day 1 = trial start date"
+  },
+  "early_pricing_hidden_until_time": {
+    "value": "15:30",
+    "owner": "Open - early-trial pricing restriction",
+    "note": "IST cutoff on the last hidden trial day; at this minute prices are allowed"
+  },
   "failed_turns_for_handoff": {
     "value": 3,
     "owner": "Tushar 25-Sep-2026",
@@ -51,7 +61,13 @@
     "note": "Team calling hours end (IST)"
   },
   "calling_days": {
-    "value": ["Mon", "Tue", "Wed", "Thu", "Fri"],
+    "value": [
+      "Mon",
+      "Tue",
+      "Wed",
+      "Thu",
+      "Fri"
+    ],
     "owner": "Business - support team",
     "note": "Days the team calls customers back (voice 'senior will call you' callbacks)"
   },
@@ -155,6 +171,11 @@
     "owner": "Claude - v4 design; Open to change",
     "note": "HUMAN mode ends by itself after this many hours without staff activity"
   },
+  "agent_idle_release_minutes": {
+    "value": 10,
+    "owner": "Business - support team",
+    "note": "An agent wrote in the chat: Tanya takes it back after this many minutes with no new agent message (she never answers what the agent already answered)"
+  },
   "staff_silent_alert_minutes": {
     "value": 5,
     "owner": "v4 §7.6",
@@ -239,7 +260,11 @@
     "note": "Write the 'Ms Tanya - Lead Brief (auto)' note to the CRM. Off: the CRM notes show only the Conversation Summary; the brief is still stored in MySQL"
   },
   "llm_hedge_after_seconds": {
-    "value": {"understand": 4.0, "reply": 5.0, "check": 4.5},
+    "value": {
+      "understand": 4.0,
+      "reply": 5.0,
+      "check": 4.5
+    },
     "owner": "Claude - Feature 6, 06-Oct-2026",
     "note": "A slow AI answer gets one duplicate request after this many seconds; the first answer is used. LLM_HEDGE=0 turns it off"
   },

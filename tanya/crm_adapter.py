@@ -145,6 +145,8 @@ class ConsoleAdapter(CRMAdapter):
 class SupportBoardAdapter(CRMAdapter):
     """Real CRM through api.php.  Needs in .env: CRM_API_URL, CRM_API_TOKEN, CRM_WEBHOOK_SECRET,
     TANYA_AGENT_ID (A3), CRM_HUMAN_DEPARTMENT_ID (A8)."""
+    numeric_ids = True       # CRM conversation ids are numbers; anything else (U1002 from a dev run) is not a chat here
+    access_gate = True       # chat only for the numbers on the dashboard's AI list (tanya/access.py)
 
     # TO CONFIRM (A1): exact api.php function names in TG CRM v3.8.4
     FN = {
@@ -238,6 +240,15 @@ class SupportBoardAdapter(CRMAdapter):
     def recent_conversations(self, since_utc):
         res = self._call("new_conversations", datetime=since_utc)
         return res if isinstance(res, list) else []
+
+    def last_staff_message_id(self, conversation_id):
+        """CRM id of the newest real staff message in this chat ('' if none) — same rules as staff_replied_after."""
+        best = 0
+        for m in self.get_conversation(conversation_id, limit=30):
+            has_content = bool(str(m.get("message") or "").strip()) or str(m.get("attachments") or "") not in ("", "[]")
+            if has_content and str(m.get("user_type")) in ("agent", "admin") and str(m.get("user_id")) != self.tanya_agent:
+                best = max(best, int(m.get("id", 0) or 0))
+        return str(best) if best else ""
 
     def staff_replied_after(self, conversation_id, after_message_id):
         try:

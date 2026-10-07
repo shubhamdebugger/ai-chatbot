@@ -128,6 +128,7 @@ class FileStore:
             h = self.db.setdefault("handoffs", {}).get(conversation_id)
             if h and h.get("status") == "open":
                 h["status"] = "released"
+            self.db.setdefault("agent_idle", {}).pop(conversation_id, None)
             self._flush()
 
     def release_time(self, conversation_id):
@@ -171,6 +172,23 @@ class FileStore:
 
     def handoff_end(self, conversation_id, status):
         self.handoff_update(conversation_id, status=status)
+
+    # ---- agent idle (07-Oct-2026): an agent wrote in the chat -> Tanya back after N quiet minutes
+    def agent_idle_set(self, conversation_id, data, due_epoch):
+        with self.lock:
+            self.db.setdefault("agent_idle", {})[conversation_id] = dict(data, due=due_epoch)
+            self._flush()
+
+    def agent_idle_get(self, conversation_id):
+        return self.db.get("agent_idle", {}).get(conversation_id)
+
+    def agent_idle_due(self, before_epoch):
+        return [c for c, e in self.db.get("agent_idle", {}).items() if e.get("due", 0) <= before_epoch]
+
+    def agent_idle_clear(self, conversation_id):
+        with self.lock:
+            self.db.setdefault("agent_idle", {}).pop(conversation_id, None)
+            self._flush()
 
     # ---- typing / queued state the PWA reads (never left on: expires by itself)
     def typing_set(self, conversation_id, state, ttl):
@@ -324,6 +342,7 @@ class RedisStore:
         p.set(f"tanya:release:{conversation_id}", now.isoformat(), ex=30 * 86400)
         p.zrem("tanya:staff_wait", conversation_id)
         p.zrem("tanya:handoff_due", conversation_id)        # a Tanya handoff ends with the release
+        p.zrem("tanya:agent_idle_due", conversation_id)     # so does the agent-idle timer
         p.execute()
 
     def release_time(self, conversation_id):
@@ -379,6 +398,28 @@ class RedisStore:
         p.zrem("tanya:handoff_due", conversation_id)
         p.execute()
         self.handoff_update(conversation_id, status=status)
+
+    # ---- agent idle (07-Oct-2026): an agent wrote in the chat -> Tanya back after N quiet minutes
+    #   tanya:agent_idle:{conv}  hash (user_id, last_staff_id, at)     tanya:agent_idle_due  zset conv -> due epoch
+    def agent_idle_set(self, conversation_id, data, due_epoch):
+        p = self.r.pipeline()
+        p.hset(f"tanya:agent_idle:{conversation_id}", mapping={k: str(v) for k, v in dict(data, due=due_epoch).items()})
+        p.expire(f"tanya:agent_idle:{conversation_id}", 2 * 86400)
+        p.zadd("tanya:agent_idle_due", {conversation_id: due_epoch})
+        p.execute()
+
+    def agent_idle_get(self, conversation_id):
+        e = self.r.hgetall(f"tanya:agent_idle:{conversation_id}")
+        return dict(e, due=float(e.get("due", 0))) if e else None
+
+    def agent_idle_due(self, before_epoch):
+        return list(self.r.zrangebyscore("tanya:agent_idle_due", 0, before_epoch))
+
+    def agent_idle_clear(self, conversation_id):
+        p = self.r.pipeline()
+        p.zrem("tanya:agent_idle_due", conversation_id)
+        p.delete(f"tanya:agent_idle:{conversation_id}")
+        p.execute()
 
     # ---- typing / queued state the PWA reads (never left on: expires by itself)
     def typing_set(self, conversation_id, state, ttl):

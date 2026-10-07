@@ -2,9 +2,9 @@
   "_read_me": "Fixed lines FX-01..FX-18. The AI never writes these. {name}, {case_no}, {when}, {slot_1}, {slot_2}, {plan_line}, {limit}, {sebi_reg_no} are filled by code. Status: DRAFT - for Tushar and compliance approval (input D2).",
   "FX-01": {
     "moment": "AI disclosure - first message ever",
-    "english": "Hi {name}, I'm Tanya — TG Level's AI assistant. I'll guide you through your trial step by step and answer your questions. Whenever you want a person from our team, just say so.",
-    "hinglish": "Namaste {name}, main Tanya hoon — TG Level ki AI assistant. Aapke trial mein step by step guide karungi. Kabhi bhi team se baat karni ho, bas bol dijiye.",
-    "hindi": "नमस्ते {name}, मैं तान्या हूँ — TG Level की AI असिस्टेंट। आपके ट्रायल में स्टेप बाय स्टेप गाइड करूँगी। कभी भी टीम से बात करनी हो, बस बोल दीजिए।"
+    "english": "Hi {name}, I'm Tanya — TG Level's(Demo AI Guide). I'll guide you through your trial step by step and answer your questions. Whenever you want a person from our team, just say so.",
+    "hinglish": "Namaste {name}, main Tanya hoon — TG Level ki (Demo AI Guide). Aapke trial mein step by step guide karungi. Kabhi bhi team se baat karni ho, bas bol dijiye.",
+    "hindi": "नमस्ते {name}, मैं तान्या हूँ — TG Level की Demo AI Guide आपके ट्रायल में स्टेप बाय स्टेप गाइड करूँगी। कभी भी टीम से बात करनी हो, बस बोल दीजिए।"
   },
   "FX-02": {
     "moment": "Chat-first line, once after the first useful answer",
@@ -119,6 +119,13 @@
     "english": "Nahi, paise double hone ki guarantee koi SEBI-registered research provider nahi de sakta. Markets uncertain hote hain, aur ‘sure-shot’ ya ‘100%’ ka wada warning sign hai.",
     "hinglish": "Nahi, paise double hone ki guarantee koi SEBI-registered research provider nahi de sakta. Markets uncertain hote hain, aur ‘sure-shot’ ya ‘100%’ ka wada warning sign hai.",
     "hindi": "Nahi, paise double hone ki guarantee koi SEBI-registered research provider nahi de sakta. Markets uncertain hote hain, aur ‘sure-shot’ ya ‘100%’ ka wada warning sign hai."
+  },
+  "FX-32": {
+    "moment": "Plans/pricing question on trial Day 1-2 - prices held back until Day 3 (R13E)",
+    "status": "DRAFT",
+    "english": "TG Levels has various plans, models, and offerings designed to suit different needs. Our founder, Tushar Ghone, will personally explain the available options and offers to you. So, stay tuned — you’ll hear from him soon with all the details.",
+    "hinglish": "TG Levels mein alag-alag plans, models aur offerings available hain, jo different needs ke according hain. In sabhi options aur offers ke baare mein hamare founder, Tushar Ghone, aapko personally explain karenge. Isliye stay tuned — aapko jald hi unki taraf se poori details milengi.",
+    "hindi": "TG Levels में अलग-अलग प्लान, मॉडल और ऑफ़रिंग्स उपलब्ध हैं, जो विभिन्न आवश्यकताओं के अनुसार हैं। इन सभी विकल्पों और ऑफ़र्स के बारे में हमारे फ़ाउंडर, तुषार घोणे, आपको व्यक्तिगत रूप से विस्तार से बताएंगे। इसलिए जुड़े रहिए — आपको जल्द ही उनकी ओर से पूरी जानकारी मिलेगी।"
   },
   "FX-24": {
     "moment": "Zero-AI small talk - greeting (after the disclosure)",

@@ -105,6 +105,10 @@ def summarize_due(store, llm, adapter, now=None):
     now = now or tnow()
     done = []
     for conv, state in store.summary_dirty().items():
+        if getattr(adapter, "numeric_ids", False) and not str(conv).isdigit():
+            store.summary_clear(conv)        # not a CRM chat (dev/console id): the CRM would 500 on it forever
+            print(f"[summary] dropped conv={conv}: not a CRM conversation id", file=sys.stderr, flush=True)
+            continue
         if not due(state, now.timestamp()):
             continue
         try:
