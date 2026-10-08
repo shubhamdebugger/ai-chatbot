@@ -56,6 +56,7 @@ class TurnState(TypedDict, total=False):
     node_ms: dict
     limited: bool
     labels: dict
+    oos: dict                   # out-of-scope check of this message (oos.py), also in the trace
     decision: Any
     hits: list
     plan_row: Any

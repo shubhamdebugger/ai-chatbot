@@ -24,7 +24,14 @@ Questions this answers: aap pe trust kyun kare · registered ho kya
 
 1. TG Levels is run by a SEBI-registered Research Analyst.
 2. TG Levels follows all SEBI guidelines and works according to SEBI's rules and regulations.
+## A01.3 TG – Name Reference
 
+Questions this answers: TG kaun hai · who is TG · what is TG · TG ka matlab kya hai · TG full form kya hai
+
+1. **TG** refers to **Tushar Ghone**.
+2. **TG Levels** refers to the company, TG Levels.
+3. When the user specifically asks about **"TG"**, the answer should refer to **Tushar Ghone**.
+4. When the user asks about **"TG Levels"**, the answer should refer to the **company**.
 ## A01.4 Why Choose TG Levels – Transparent Services
 
 Questions this answers: aap transparent ho kya · fraud toh nahi

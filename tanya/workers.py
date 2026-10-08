@@ -216,6 +216,12 @@ class TurnHandler:
             except Exception as e:
                 self.store.emit([{"type": "alert", "user_id": st["user_id"], "at": iso(tnow()),
                                   "kind": "crm_write_failed", "detail": str(e)[:200]}])
+        if (st.get("oos") or {}).get("handover"):   # off-topic block started: alert the team only, Tanya keeps FX-41
+            try:
+                self.adapter.hand_to_human(conv, st["oos"]["handover"])
+            except Exception as e:
+                self.store.emit([{"type": "alert", "user_id": st["user_id"], "at": iso(tnow()),
+                                  "kind": "crm_write_failed", "detail": str(e)[:200]}])
         return conv, suppressed, post_failed
 
     def _post_bubbles(self, conv, bubbles, event, reconcile=False):
