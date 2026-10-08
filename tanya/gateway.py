@@ -285,7 +285,7 @@ def _webhook(payload, headers):
         from .handoff_recovery import released_by_staff
         released_by_staff(store, ev.conversation_id, timeutil.now(), ev.kind)
         store.release_conversation(ev.conversation_id, timeutil.now())
-        if ev.kind == "conversation_closed":                         # final summary of the closed chat
+        if ev.kind == "conversation_closed" and not access.is_off(store, ev.conversation_id):   # final summary
             store.summary_touch(ev.conversation_id, ev.user_id, time.time(), force=True)
         store.emit([{"type": "mode", "user_id": ev.user_id or ev.conversation_id, "at": timeutil.iso(timeutil.now()),
                      "conversation_id": ev.conversation_id, "mode": "BOT", "by": ev.kind}])
@@ -298,7 +298,8 @@ def _webhook(payload, headers):
         agent_replied(store, ev.conversation_id, timeutil.now(), agent_id=sender)   # keeps HUMAN, cancels recovery
         from .handoff_recovery import agent_activity                 # Tanya back after N quiet agent minutes
         agent_activity(store, ev.conversation_id, ev.user_id, ev.event_id, timeutil.now())
-        store.summary_touch(ev.conversation_id, ev.user_id, time.time())
+        if not access.is_off(store, ev.conversation_id):             # Tanya off for this chat: no summary
+            store.summary_touch(ev.conversation_id, ev.user_id, time.time())
     if ev.kind not in ("user_message", "staff_message"):
         return 200, {"ok": True, "skipped": ev.kind}, ev
     event = {"event_id": ev.event_id, "kind": ev.kind, "user_id": ev.user_id,

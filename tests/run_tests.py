@@ -982,6 +982,25 @@ def summary_throttled_built_from_conversation_and_kept_on_failure():
 
 
 @test
+def summary_only_for_chats_tanya_took_part_in():
+    """08-Oct-2026: no Conversation Summary note for a chat without any Tanya message (Tanya off for that
+    customer, staff-only chat) - dropped without an AI call; a chat with a Tanya message still gets one."""
+    from tanya import summaries
+    s = fresh_store()
+    staff_only = [{"id": 1, "user_id": "U5", "user_type": "lead", "message": "Hello"},
+                  {"id": 2, "user_id": "70800", "user_type": "agent", "message": "Haan boliye"}]
+    s.summary_touch("C93", "U5", NIGHT.timestamp(), force=True)
+    crm = _FakeCRM(messages=staff_only)
+    assert summaries.summarize_due(s, LLMX, crm, now=NIGHT) == [] and crm.notes == {}
+    assert "C93" not in s.summary_dirty()
+    assert not any(e.get("kind") == "summary_failed" for e in _evs(s))
+    with_tanya = staff_only + [{"id": 3, "user_id": "2", "user_type": "bot", "message": "Main Tanya hoon"}]
+    s.summary_touch("C94", "U5", NIGHT.timestamp(), force=True)
+    crm = _FakeCRM(messages=with_tanya)
+    assert summaries.summarize_due(s, LLMX, crm, now=NIGHT) == ["C94"] and "C94" in crm.notes
+
+
+@test
 def crm_hidden_event_is_not_an_agent_reply():
     """Live bug 06-Oct: the empty 'conversation-department-update' message Support Board writes (as the API admin)
     when Tanya hands over was counted as an agent reply, so the handoff was never recovered."""

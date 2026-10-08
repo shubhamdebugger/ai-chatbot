@@ -7,6 +7,8 @@ Plain English:
     summary_every_messages (5) new messages since the last summary, or
     its oldest unsummarised message is summary_max_age_minutes (10) old, or
     a forced event: Tanya handed over, recovery, chat closed.
+- Only for chats Tanya took part in (08-Oct-2026): a conversation with no Tanya message (customer not on the
+  dashboard's AI list, staff-only chat) gets no summary and no note; it is dropped without an AI call.
 - Built from the CRM's own copy of this conversation (customer, Tanya and staff messages), by one cheap AI call
   in the sessions process — never in the chat path, never blocking a reply.
 - Stored in MySQL (orch_conv_summaries, via the persister) and in the CRM note. If generation or the CRM write
@@ -50,11 +52,20 @@ def _plain(html):
     return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", str(html or ""))).strip()
 
 
+def _is_tanya(m, tanya_id):
+    return str(m.get("user_id")) == str(tanya_id) or str(m.get("user_type")) == "bot"
+
+
+def tanya_took_part(messages, tanya_id):
+    """True if Tanya wrote at least one message in this conversation."""
+    return any(_is_tanya(m, tanya_id) and _plain(m.get("message")) for m in messages)
+
+
 def transcript(messages, tanya_id):
     lines = []
     for m in messages:
-        ut, uid = str(m.get("user_type")), str(m.get("user_id"))
-        who = "Tanya" if uid == str(tanya_id) or ut == "bot" else ("Agent" if ut in ("agent", "admin") else "Customer")
+        ut = str(m.get("user_type"))
+        who = "Tanya" if _is_tanya(m, tanya_id) else ("Agent" if ut in ("agent", "admin") else "Customer")
         text = _plain(m.get("message"))
         if text:
             lines.append(f"{who}: {text[:400]}")
@@ -76,10 +87,13 @@ def note_text(summary, now):
 
 
 def summarize_conversation(store, llm, adapter, conv, user_id, now):
-    """Build + store one summary. Raises on failure (caller keeps the old summary and retries)."""
+    """Build + store one summary. Returns None (nothing written) when Tanya never chatted in this conversation.
+    Raises on failure (caller keeps the old summary and retries)."""
     from .crm_adapter import SUMMARY_NOTE_NAME
     msgs = adapter.get_conversation(conv, limit=80)
     tanya = getattr(adapter, "tanya_agent", "2")
+    if not tanya_took_part(msgs, tanya):
+        return None
     text = transcript(msgs, tanya)
     if not text:
         raise ValueError("empty conversation")
@@ -112,7 +126,10 @@ def summarize_due(store, llm, adapter, now=None):
         if not due(state, now.timestamp()):
             continue
         try:
-            summarize_conversation(store, llm, adapter, conv, state.get("user_id"), now)
+            if summarize_conversation(store, llm, adapter, conv, state.get("user_id"), now) is None:
+                store.summary_clear(conv)    # Tanya never chatted here: no summary note for this conversation
+                print(f"[summary] skipped conv={conv}: no Tanya message", file=sys.stderr, flush=True)
+                continue
             store.summary_clear(conv)
             done.append(conv)
             print(f"[summary] updated conv={conv} after {state.get('count', 0)} msgs", file=sys.stderr, flush=True)
