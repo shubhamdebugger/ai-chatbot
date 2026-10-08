@@ -19,7 +19,7 @@ from .brief import lead_brief
 from .company_info import add_website_line
 from .content_pack import PACK
 from .decider import Decision, FIXED_ONLY, COUNTS_AS_EDUCATION, NO_EMOJI, decide
-from .guard_input import injection, mask
+from .guard_input import abusive, injection, mask
 from .guard_output import ai_check, amounts, approved_text_for, emoji_rule, net
 from .handoff import open_case, request_callback, two_slots, when_phrase
 from .knowledge import is_placeholder
@@ -114,6 +114,8 @@ def n_understand(st):
     # --- session counters (this message included) ---
     if L["small_talk"]["on"]:
         sess["small_talk"] += 1
+    if not L["abuse"]["on"] and abusive(st["text"]):        # a curse word is a strike even if the AI missed it
+        L["abuse"] = {"on": True, "evidence": "curse word", "confidence": 1.0}
     if L["abuse"]["on"]:
         sess["abuse"] += 1
     if L["flirting"]["on"]:
@@ -142,6 +144,11 @@ def n_decide(st):
         st["decision"] = decide(st["labels"], rec, st["now"], st.get("limited", False))
     if st["decision"].action == "PAUSE_SELLING":
         rec["session"]["selling_paused"] = True
+    if st["decision"].action == "END_CHAT_ABUSE":
+        # 3rd strike: FX-35 is her last line; the gate keeps her silent until a new session starts
+        rec["session"]["ended"] = "abuse"
+        _ev(st, "alert", kind="chat_ended_abuse", strikes=rec["session"]["abuse"],
+            session=rec["session"]["id"], conversation_id=rec["conversation_id"])
     return st
 
 

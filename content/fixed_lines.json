@@ -260,5 +260,17 @@
     "english": "Our team is currently unavailable. I'll continue assisting you until an agent becomes available.",
     "hinglish": "Hamari team abhi available nahi hai. Jab tak koi team member available nahi hota, main aapki madad karti rahungi.",
     "hindi": "हमारी टीम अभी उपलब्ध नहीं है। जब तक कोई टीम सदस्य उपलब्ध नहीं होता, मैं आपकी मदद करती रहूँगी।"
+  },
+  "FX-34": {
+    "moment": "Abuse - warning, strike 1 and 2 of 3 (same rule as the voice agent)",
+    "english": "Please don't use abusive words. I'm here to help you, but I can't continue this chat if this goes on.",
+    "hinglish": "Please abusive words ka istemaal na karein. Main aapki madad ke liye hoon, lekin agar aap aise baat karte rahe toh main yeh chat jaari nahi rakh paungi.",
+    "hindi": "कृपया अपशब्दों का इस्तेमाल न करें। मैं आपकी मदद के लिए यहाँ हूँ, लेकिन अगर ऐसा चलता रहा तो मैं यह चैट जारी नहीं रख पाऊँगी।"
+  },
+  "FX-35": {
+    "moment": "Abuse - strike 3 of 3, the chat ends for this session (same rule as the voice agent)",
+    "english": "I'm sorry, but because of the repeated abusive language I'm ending this chat now. You are welcome to message us again whenever you'd like to talk respectfully. Goodbye.",
+    "hinglish": "Maaf kijiye, baar-baar abusive language ke karan main ab yeh chat khatam kar rahi hoon. Jab bhi aap respect ke saath baat karna chahein, aap dobara message kar sakte hain. Dhanyavaad.",
+    "hindi": "माफ़ कीजिए, बार-बार अपशब्द कहने की वजह से मैं अब यह चैट समाप्त कर रही हूँ। जब भी आप सम्मान से बात करना चाहें, आप दोबारा मैसेज कर सकते हैं। धन्यवाद।"
   }
 }

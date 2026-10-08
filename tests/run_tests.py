@@ -202,12 +202,48 @@ def flirting_light_then_firm():
 
 
 @test
-def abuse_twice_hands_over():
+def abuse_warns_twice_then_ends_the_chat():
     r = rec_for()
-    r["session"]["abuse"] = 1
-    assert decide(labels_with(abuse=True), r, NIGHT).action == "BOUNDARY_ABUSE"
-    r["session"]["abuse"] = 2
-    assert decide(labels_with(abuse=True), r, NIGHT).action == "HAND_OVER_PERSON"
+    for n in (1, 2):
+        r["session"]["abuse"] = n
+        d = decide(labels_with(abuse=True), r, NIGHT)
+        assert (d.action, d.fixed_line) == ("BOUNDARY_ABUSE", "FX-34"), d
+    r["session"]["abuse"] = 3
+    d = decide(labels_with(abuse=True), r, NIGHT)
+    assert (d.action, d.fixed_line) == ("END_CHAT_ABUSE", "FX-35"), d
+
+
+@test
+def curse_words_are_spotted_by_code():
+    from tanya.guard_input import abusive
+    for t in ("tu chutiya hai", "madarchod bot", "what the fuck", "bhenchod kuch kaam ka nahi", "हरामी है तू"):
+        assert abusive(t), t
+    for t in ("chutney recipe batao", "meri behen chali gayi", "shiitake", "stop loss kya hai", "class kab hai"):
+        assert not abusive(t), t
+
+
+@test
+def three_abusive_messages_end_the_chat_until_a_new_session():
+    from tanya.settings import S
+    for lg in ("1", "0"):
+        uid = "U1001"
+        s = fresh_store()
+        turn(s, uid, "Namaste")
+        for n in (1, 2):
+            st = turn(s, uid, "tu chutiya hai", NIGHT + timedelta(minutes=n), use_lg=lg)
+            ids = [b["id"] for b in st["bubbles"]]
+            assert ids[-1] == "FX-34" and "AI" not in ids, (lg, n, ids)
+        st = turn(s, uid, "bakwas bot, bhenchod", NIGHT + timedelta(minutes=3), use_lg=lg)
+        assert [b["id"] for b in st["bubbles"]][-1] == "FX-35", (lg, st["bubbles"])
+        assert st["trace"]["action"] == "END_CHAT_ABUSE" and st["trace"]["reason"] == "R04"
+        assert any(e["type"] == "alert" and e["kind"] == "chat_ended_abuse" for e in st["events"])
+        st = turn(s, uid, "Stop-loss kya hota hai?", NIGHT + timedelta(minutes=4), use_lg=lg)
+        assert st["bubbles"] == [] and st["gate_reason"] == "CHAT_ENDED", (lg, st["bubbles"])
+        # a new session (after the silence gap) starts at zero strikes
+        later = NIGHT + timedelta(minutes=4 + S.get("session_gap_minutes", 30) + 1)
+        st = turn(s, uid, "Stop-loss kya hota hai?", later, use_lg=lg)
+        assert st["gate_reason"] == "OK" and st["bubbles"], (lg, st["gate_reason"])
+        assert s.get(uid)["session"]["abuse"] == 0
 
 
 # ---------------------------------------------------------------- honest times

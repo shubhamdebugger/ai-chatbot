@@ -4,6 +4,7 @@ Plain English: before Tanya thinks about a message, these rules decide
 whether she may answer at all, and in what mode:
 - HUMAN mode: a staff member is handling the chat → Tanya stays silent.
 - Kill switch: 'stopped' → silent; 'limited' → general and education answers only.
+- Chat ended for abuse (3rd strike, FX-35): silent until a new session starts.
 - Guarantee question: fixed line FX-20, no AI call.
 - Founder question: fixed line FX-33, no AI call (plan/offer questions keep the pricing flow).
 - Small talk: the whole message is a greeting / how are you / bye / thanks / sorry
@@ -107,6 +108,8 @@ def gate(rec, store, now, injection_flag: bool, text: str = ""):
         human_takeover(rec, now, by="webhook flag")
     if mode_is_human(rec, now) or store.human_flag(rec["conversation_id"], now):
         return GATE_SILENT, None, "HUMAN_MODE"
+    if rec["session"].get("ended"):
+        return GATE_SILENT, None, "CHAT_ENDED"
     if injection_flag:
         return GATE_FIXED, "FX-12", "R00"
     if GUARANTEE_RX.search(text) and MONEY_RX.search(text) and not GRIEVANCE_RX.search(text):
