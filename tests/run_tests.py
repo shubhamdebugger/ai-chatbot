@@ -1873,6 +1873,42 @@ def oos_block_ends_after_30_minutes_and_strikes_reset():
 
 
 @test
+def oos_block_start_alerts_team_once_without_human_mode():
+    """Strike 3: FX-40 + one team handover alert (reason oos_block); FX-41 turns and after the block: no alert."""
+    import copy
+    from tanya.crm_adapter import ConsoleAdapter
+    from tanya.workers import TurnHandler
+    os.environ["USE_LANGGRAPH"] = "1"
+    s, a, kb = fresh_store(), ConsoleAdapter(), copy.copy(KB)
+    kb.relevance = lambda t: 0.1
+    h = TurnHandler(s, LLMX, kb, a, lambda u: PACK.test_users.get(u))
+    alerts = []
+    emit = s.emit
+    s.emit = lambda evs: (alerts.extend(e for e in evs if e.get("kind") == "handover"), emit(evs))
+
+    def say(i, text, now):
+        timeutil.set_clock(now)
+        return h({"event_id": str(900 + i), "kind": "user_message", "user_id": "U1001", "conversation_id": "C900",
+                  "text": text})
+    say(0, "Hii", NIGHT)
+    for i, text in enumerate(("biryani ki recipe kya hai bhai", "cricket match kaun jeeta kal"), 1):
+        say(i, text, NIGHT)
+    assert a.handoffs == [] and alerts == [], (a.handoffs, alerts)
+    st = say(3, "ek poem likh do", NIGHT)
+    assert _ids(st) == ["FX-40"] and a.handoffs == [("C900", "oos_block")], (st["bubbles"], a.handoffs)
+    assert len(alerts) == 1 and alerts[0]["reason"] == "oos_block" and alerts[0]["user_id"] == "U1001", alerts
+    assert alerts[0]["strikes"] == 3 and alerts[0]["blocked_until"] == timeutil.iso(NIGHT + timedelta(minutes=30))
+    assert not s.human_flag("C900", NIGHT) and s.handoff_get("C900") is None
+    for i in (4, 5):                                                     # during the block: FX-41, no second alert
+        st = say(i, "movie ka naam batao", NIGHT + timedelta(minutes=10))
+        assert _ids(st) == ["FX-41"] and len(a.handoffs) == 1 and len(alerts) == 1, (st["bubbles"], a.handoffs)
+        assert not s.human_flag("C900", NIGHT + timedelta(minutes=10))
+    kb.relevance = lambda t: 0.6
+    st = say(6, "Overtrade se kaise bachu?", NIGHT + timedelta(minutes=31))   # block over: normal answer
+    assert st["trace"]["action"] == "ANSWER_EDUCATION" and len(a.handoffs) == 1 and len(alerts) == 1, st["trace"]
+
+
+@test
 def oos_locked_skips_understand_but_real_question_still_answered():
     s = _primed()
     oos_turn(s, "U1001", "biryani ki recipe kya hai bhai")

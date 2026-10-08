@@ -192,6 +192,9 @@ def n_decide(st):
             o["strikes"], o["last_at"] = o["strikes"] + 1, iso(st["now"])
             if o["strikes"] >= oos.before_block():
                 oos.start_block(o, st["now"])    # FX-40 now, FX-41 for every message until it ends
+                st["oos"]["handover"] = "oos_block"   # team alert once per block (workers.py); no HUMAN mode
+                _ev(st, "alert", kind="handover", reason="oos_block", strikes=o["strikes"],
+                    blocked_until=o["blocked_until"], conversation_id=rec["conversation_id"])
             _hide_oos_message(st)
         else:
             o["strikes"] = 0                     # an in-scope message answered the normal way
