@@ -1,5 +1,5 @@
 {
-  "_read_me": "Fixed lines FX-01..FX-18. The AI never writes these. {name}, {case_no}, {when}, {slot_1}, {slot_2}, {plan_line}, {limit}, {sebi_reg_no} are filled by code. Status: DRAFT - for Tushar and compliance approval (input D2).",
+  "_read_me": "Fixed lines FX-01..FX-41. Each FX id is used once (the loader rejects duplicates); FX-21..FX-23 are reserved. The AI never writes these. {name}, {case_no}, {when}, {slot_1}, {slot_2}, {plan_line}, {limit}, {sebi_reg_no} are filled by code. Status: DRAFT - for Tushar and compliance approval (input D2).",
   "FX-01": {
     "moment": "AI disclosure - first message ever",
     "english": "Hi {name}, I'm Tanya — TG Level's(Demo AI Guide). I'll guide you through your trial step by step and answer your questions. Whenever you want a person from our team, just say so.",
@@ -86,9 +86,9 @@
   },
   "FX-15": {
     "moment": "Abuse - calm line",
-    "english": "I understand you're upset. I want to help — tell me what the problem is, or shall I connect you with our team?",
-    "hinglish": "Main samajh sakti hoon aap pareshan hain. Main madad karna chahti hoon — bataiye kya problem hai, ya main team se baat karwa doon?",
-    "hindi": "मैं समझ सकती हूँ आप परेशान हैं। मैं मदद करना चाहती हूँ — बताइए क्या समस्या है, या मैं टीम से बात करवा दूँ?"
+    "english": "I understand you're upset. I want to help — tell me what the problem is ?",
+    "hinglish": "Main samajh sakti hoon aap pareshan hain. Main madad karna chahti hoon — bataiye kya problem hai ?",
+    "hindi": "मैं समझ सकती हूँ आप परेशान हैं। मैं मदद करना चाहती हूँ — बताइए क्या समस्या है ?"
   },
   "FX-16": {
     "moment": "Repeated flirting - firm line",
@@ -235,27 +235,63 @@
       }
     }
   },
-  "FX-32": {
+  "FX-34": {
+    "moment": "Abuse - warning, strike 1 and 2 of 3 (same rule as the voice agent)",
+    "english": "Please don't use abusive words. I'm here to help you, but I can't continue this chat if this goes on.",
+    "hinglish": "Please abusive words ka istemaal na karein. Main aapki madad ke liye hoon, lekin agar aap aise baat karte rahe toh main yeh chat jaari nahi rakh paungi.",
+    "hindi": "कृपया अपशब्दों का इस्तेमाल न करें। मैं आपकी मदद के लिए यहाँ हूँ, लेकिन अगर ऐसा चलता रहा तो मैं यह चैट जारी नहीं रख पाऊँगी।"
+  },
+  "FX-35": {
+    "moment": "Abuse - strike 3 of 3, the chat ends for this session (same rule as the voice agent)",
+    "english": "I'm sorry, but because of the repeated abusive language I'm ending this chat now. You are welcome to message us again whenever you'd like to talk respectfully. Goodbye.",
+    "hinglish": "Maaf kijiye, baar-baar abusive language ke karan main ab yeh chat khatam kar rahi hoon. Jab bhi aap respect ke saath baat karna chahein, aap dobara message kar sakte hain. Dhanyavaad.",
+    "hindi": "माफ़ कीजिए, बार-बार अपशब्द कहने की वजह से मैं अब यह चैट समाप्त कर रही हूँ। जब भी आप सम्मान से बात करना चाहें, आप दोबारा मैसेज कर सकते हैं। धन्यवाद।"
+  },
+  "FX-36": {
     "moment": "Plans/pricing question on trial Day 1-2 - prices held back until Day 3 (R13E)",
     "status": "DRAFT",
     "english": "TG Levels has various plans, models, and offerings designed to suit different needs. Our founder, Tushar Ghone, will personally explain the available options and offers to you. So, stay tuned — you’ll hear from him soon with all the details.",
     "hinglish": "TG Levels mein alag-alag plans, models aur offerings available hain, jo different needs ke according hain. In sabhi options aur offers ke baare mein hamare founder, Tushar Ghone, aapko personally explain karenge. Isliye stay tuned — aapko jald hi unki taraf se poori details milengi.",
     "hindi": "TG Levels में अलग-अलग प्लान, मॉडल और ऑफ़रिंग्स उपलब्ध हैं, जो विभिन्न आवश्यकताओं के अनुसार हैं। इन सभी विकल्पों और ऑफ़र्स के बारे में हमारे फ़ाउंडर, तुषार घोणे, आपको व्यक्तिगत रूप से विस्तार से बताएंगे। इसलिए जुड़े रहिए — आपको जल्द ही उनकी ओर से पूरी जानकारी मिलेगी।"
   },
-  "FX-33": {
+  "FX-37": {
     "moment": "Founder question - who founded / owns / runs TG Levels (R07F)",
     "status": "DRAFT",
     "english": "Tushar Ghone is the Founder and Chief Mentor of TG Levels, and also serves as its CEO and Principal Officer. He is NISM-certified, SEBI-registered, and holds a B.E. from VJTI Mumbai along with a Post Graduate Diploma in Finance.",
     "hinglish": "Tushar Ghone, TG Levels ke Founder aur Chief Mentor hain, aur saath hi company ke CEO aur Principal Officer bhi hain. Woh NISM-certified aur SEBI-registered hain, aur unhone VJTI Mumbai se B.E. aur Finance mein Post Graduate Diploma kiya hai.",
     "hindi": "तुषार घोणे TG Levels के फ़ाउंडर और चीफ़ मेंटर हैं, और साथ ही कंपनी के CEO और प्रिंसिपल ऑफ़िसर भी हैं। वे NISM-प्रमाणित और SEBI-पंजीकृत हैं, और उन्होंने VJTI मुंबई से B.E. तथा फ़ाइनेंस में पोस्ट ग्रेजुएट डिप्लोमा किया है।"
   },
-  "FX-34": {
+  "FX-38": {
+    "purpose": "Out of scope, strike 1 (no AI call)",
+    "english": "I can help you with TG Levels, our services, app, subscription, or related queries. Please ask me something related to TG Levels.",
+    "hinglish": "Main aapki TG Levels, hamari services, app, subscription aur related queries mein help kar sakti hoon. Please TG Levels se related sawaal poochhein.",
+    "hindi": "मैं TG Levels, हमारी सेवाओं, ऐप, सब्सक्रिप्शन और उनसे जुड़ी जानकारी में आपकी मदद कर सकती हूँ। कृपया TG Levels से संबंधित सवाल पूछें।"
+  },
+  "FX-39": {
+    "purpose": "Out of scope, strike 2: warning before the block (no AI call)",
+    "english": "I can help you with TG Levels, our services, app, subscription, or related queries. Please ask me something related to TG Levels. Please note: one more irrelevant query will result in this chat being blocked.",
+    "hinglish": "Main aapki TG Levels, hamari services, app, subscription aur related queries mein help kar sakti hoon. Please TG Levels se related sawaal poochhein. Please note: ek aur irrelevant query ke baad ye chat block ho jayegi.",
+    "hindi": "मैं TG Levels, हमारी सेवाओं, ऐप, सब्सक्रिप्शन और उनसे जुड़ी जानकारी में आपकी मदद कर सकती हूँ। कृपया TG Levels से संबंधित सवाल पूछें। ध्यान दें: एक और असंबंधित सवाल पूछने पर यह चैट ब्लॉक हो जाएगी।"
+  },
+  "FX-40": {
+    "purpose": "Out of scope, strike 3: the block starts (no AI call)",
+    "english": "I can help you with TG Levels, our services, app, subscription, or related queries. However, you have reached the limit for irrelevant queries. This chat has been blocked. Please try again later.",
+    "hinglish": "Main aapki TG Levels, hamari services, app, subscription aur related queries mein help kar sakti hoon. Aap irrelevant queries ki limit reach kar chuke hain, isliye ye chat block kar di gayi hai. Please baad mein dobara try karein.",
+    "hindi": "मैं TG Levels, हमारी सेवाओं, ऐप, सब्सक्रिप्शन और उनसे जुड़ी जानकारी में आपकी मदद कर सकती हूँ। आप असंबंधित सवालों की सीमा तक पहुँच चुके हैं, इसलिए यह चैट ब्लॉक कर दी गई है। कृपया बाद में दोबारा प्रयास करें।"
+  },
+  "FX-41": {
+    "purpose": "Every message during the off-topic block (no AI call; complaint / distress words skip the block)",
+    "english": "I'm sorry, but this chat is temporarily blocked. Please try again later. Thank you for your understanding.",
+    "hinglish": "Sorry, ye chat temporarily block hai. Please baad mein dobara try karein. Thank you for understanding.",
+    "hindi": "क्षमा करें, यह चैट अस्थायी रूप से ब्लॉक है। कृपया बाद में दोबारा प्रयास करें। आपके सहयोग के लिए धन्यवाद।"
+  },
+  "FX-42": {
     "purpose": "Handoff recovery, business hours: no agent replied within 10 minutes (Tushar 06-Oct-2026)",
     "english": "Sorry for the delay. While our team is unavailable, I can continue assisting you.",
     "hinglish": "Deri ke liye maaf kijiye. Jab tak hamari team available nahi hai, main aapki madad karti rahungi.",
     "hindi": "देरी के लिए माफ़ कीजिए। जब तक हमारी टीम उपलब्ध नहीं है, मैं आपकी मदद करती रहूँगी।"
   },
-  "FX-35": {
+  "FX-43": {
     "purpose": "Handoff recovery, night: no agent replied within 12 hours (Tushar 06-Oct-2026)",
     "english": "Our team is currently unavailable. I'll continue assisting you until an agent becomes available.",
     "hinglish": "Hamari team abhi available nahi hai. Jab tak koi team member available nahi hota, main aapki madad karti rahungi.",

@@ -333,6 +333,17 @@ class KnowledgeIndex:
                                           "text", "never_say")} | {"score": round(s, 3)})
         return out
 
+    def relevance(self, text: str):
+        """Max cosine similarity (0..1) of his message to any approved chunk — an absolute scale, unlike search(),
+        whose keyword part is relative to the best chunk. Reuses the prefetched / cached query embedding.
+        None when there are no vectors or the embedding is unavailable (the out-of-scope check then says relevant)."""
+        if not self.has_vectors or not (text or "").strip():
+            return None
+        qv = self._query_vector(text)
+        if not qv:
+            return None
+        return round(max(self._cos(qv[0], c["vec"]) for c in self.chunks), 3)
+
     def chunks_for_db(self):
         """Rows for MySQL orch_kb_chunks (production sync job)."""
         return [{"chunk_id": c["chunk_id"], "doc_id": c["doc_id"], "title": c["title"], "category": c["category"],

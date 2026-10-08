@@ -13,7 +13,7 @@ YES_NO_LABELS = [
     "small_talk", "education_question", "support_question", "trade_advice_seeking",
     "distress", "grievance", "wants_person", "purchase_intent", "interest",
     "timing_objection", "prefers_call", "abuse", "flirting", "asks_if_ai",
-    "not_helpful", "refers_to_past", "asks_guarantee", "asks_founder",
+    "not_helpful", "refers_to_past", "asks_guarantee", "out_of_scope", "asks_founder",
 ]
 
 FACT_FIELDS = {
@@ -60,6 +60,9 @@ Labels — list in "on" ONLY the labels that apply (often none: []):
 - asks_if_ai: asks whether she is a bot/AI or a real person.
 - not_helpful: says the answer did not help, or complains she repeats herself.
 - refers_to_past: refers to something said in an earlier chat.
+- out_of_scope: the message has nothing to do with TG Level (its app, alerts, services, trial, subscription, team) AND nothing to do with money or finance. Requests for unrelated content or help (recipes, poems, essays, jokes, code, sports, movies, travel, health, gadgets, general knowledge) are out of scope. NOT out of scope: greetings and small talk, questions about the assistant, support/account/payment issues, complaints, and ANY money or finance question — stock market, trading, investing, saving, banking, loans, insurance, tax, interest rates, inflation, the economy, gold, FD, mutual funds, demat, IPO, crypto. If unsure, answer no (do not list it).
+  Out of scope: "biryani ki recipe batao", "who won the cricket match yesterday?", "write a poem about rain", "python mein list sort kaise kare", "कल मौसम कैसा रहेगा?".
+  NOT out of scope: "inflation kya hota hai?", "GST kya hota hai?", "बैंक लोन पर ब्याज कैसे लगता है?", "is this app safe?", "mera login nahi ho raha", "how are you?".
 
 Facts: only what he states about HIMSELF, explicitly. Allowed fields:
 """ + "\n".join(f"- {k}: {v}" for k, v in FACT_FIELDS.items()) + """

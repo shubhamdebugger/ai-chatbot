@@ -25,6 +25,16 @@ def _fp(path: Path) -> str:
     return hashlib.sha1(path.read_bytes()).hexdigest()[:8]
 
 
+def _no_dupes(name: str, pairs: list) -> dict:
+    """A repeated key in a content file would silently replace the first one (two FX lines on one id) — refuse it."""
+    seen = {}
+    for k, v in pairs:
+        if k in seen:
+            raise ValueError(f"content/{name}: duplicate key {k!r}")
+        seen[k] = v
+    return seen
+
+
 class ContentPack:
     def __init__(self, folder: Path = CONTENT):
         self.folder = folder
@@ -42,7 +52,7 @@ class ContentPack:
     def _json(self, name):
         p = self.folder / name
         self.versions[name] = _fp(p)
-        return json.loads(p.read_text(encoding="utf-8"))
+        return json.loads(p.read_text(encoding="utf-8"), object_pairs_hook=lambda kv: _no_dupes(name, kv))
 
     def _csv(self, name):
         p = self.folder / name

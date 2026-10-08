@@ -89,7 +89,7 @@ def add_message(rec, role, text, now, delivered=True, meta=None) -> int:
 def history_for_prompt(rec, n=None):
     """The last N delivered messages, word for word (Architecture §7.6.4)."""
     n = n or S.get("history_messages_in_prompt", 10)
-    msgs = [m for m in rec["messages"] if m.get("delivered", True)]
+    msgs = [m for m in rec["messages"] if m.get("delivered", True) and not (m.get("meta") or {}).get("oos")]
     return [{"role": "assistant" if m["role"] == "assistant" else "user", "content": m["text"]}
             for m in msgs[-n:]]
 

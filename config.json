@@ -13,7 +13,7 @@
   "early_pricing_hidden_until_trial_day": {
     "value": 2,
     "owner": "Open - early-trial pricing restriction",
-    "note": "Plan/price questions before this trial day, and on it until early_pricing_hidden_until_time, get FX-32 (no prices) instead of ANSWER_PRICE; Day 1 = trial start date"
+    "note": "Plan/price questions before this trial day, and on it until early_pricing_hidden_until_time, get FX-36 (no prices) instead of ANSWER_PRICE; Day 1 = trial start date"
   },
   "early_pricing_hidden_until_time": {
     "value": "15:30",
@@ -136,10 +136,10 @@
     "owner": "Claude - Personality Guide 10",
     "note": "Approved examples shown to the model"
   },
-  "abuse_count_for_handoff": {
-    "value": 2,
-    "owner": "Claude - Personality Guide 5.3",
-    "note": "Abusive messages in a session before hand-off"
+  "abuse_strikes_to_end_chat": {
+    "value": 3,
+    "owner": "Claude - same rule as the voice agent (voice_context.ABUSE_MAX_STRIKES)",
+    "note": "Abusive messages in a session: each one is a strike with a warning (FX-34); this strike ends the chat (FX-35)"
   },
   "contradictions_visible_to_agents": {
     "value": false,
@@ -233,6 +233,51 @@
     "value": 3,
     "owner": "Claude",
     "note": "App-open greeting at most once in this many hours"
+  },
+  "oos_relevance_threshold": {
+    "value": 0.30,
+    "owner": "Open - starting value, set from tests/eval_oos.py",
+    "note": "Out of scope only when the understand call says so AND his message's max cosine similarity to the approved knowledge is below this (raw cosine 0..1, not the hybrid search score)"
+  },
+  "oos_locked_skip_below": {
+    "value": 0.12,
+    "owner": "Open - set from tests/eval_oos.py",
+    "note": "Locked (strikes >= oos_strikes_before_block - 1): below this similarity the message is out of scope without the understand call; at or above it the understand call runs and the two-signal rule applies"
+  },
+  "oos_strikes_before_block": {
+    "value": 3,
+    "owner": "Business",
+    "note": "Off-topic strike 1 = FX-34, strike 2 = FX-35 (warning), this strike = FX-36 and the block starts; one strike before it, the similarity check comes first"
+  },
+  "oos_block_minutes": {
+    "value": 30,
+    "owner": "Business",
+    "note": "During the block every message gets FX-37 with no AI call (complaint / distress words skip it); afterwards the strikes reset to 0"
+  },
+  "oos_strike_expiry_hours": {
+    "value": 24,
+    "owner": "Business",
+    "note": "Off-topic strikes are forgotten after this many hours without a new one"
+  },
+  "oos_bypass_keywords": {
+    "value": [
+      "tg", "tg level", "tg levels", "tg lite", "tg app", "tg alert", "trial", "subscription", "subscribe",
+      "payment", "refund", "login", "log in", "password", "otp", "kyc", "account login", "demat", "demat account",
+      "trading account", "broker", "support", "agent", "customer care", "research analyst",
+      "stop loss", "stoploss", "share market", "stock market", "share price", "stock price", "nifty", "bank nifty",
+      "banknifty", "sensex", "nse", "bse", "sebi", "ipo", "mutual fund", "mutual funds", "sip", "crypto",
+      "bitcoin", "inflation", "fd", "fixed deposit", "trading", "trade", "trader", "invest", "investing",
+      "investment", "equity", "intraday", "swing trading", "option trading", "options trading", "call option",
+      "put option", "option chain", "option premium", "f&o", "futures", "commodity", "capital gains", "ltcg",
+      "stcg", "income tax", "gold price", "gold rate", "gold etf", "gold invest", "gold mein", "dividend",
+      "candlestick", "position size", "overtrading", "risk management", "portfolio",
+      "शेयर", "शेयर बाजार", "स्टॉक", "ट्रेडिंग", "ट्रेड", "निवेश", "सेबी", "निफ्टी", "सेंसेक्स", "म्यूचुअल फंड",
+      "आईपीओ", "डीमैट", "स्टॉप लॉस", "क्रिप्टो", "महंगाई", "ब्रोकर", "सब्सक्रिप्शन", "रिफंड", "पेमेंट", "ट्रायल",
+      "लॉगिन", "पासवर्ड", "केवाईसी", "सपोर्ट", "एजेंट", "शिकायत", "फ्रॉड", "धोखा", "ऑप्शन प्रीमियम", "पोजीशन साइज",
+      "ओवरट्रेडिंग", "इंट्राडे", "इक्विटी", "पोर्टफोलियो", "डिविडेंड", "कमोडिटी", "फ्यूचर्स"
+    ],
+    "owner": "Business - tune with tests/eval_oos.py",
+    "note": "Any of these in his message (case-insensitive, whole words for Latin script) skips the out-of-scope check. Phrases, not generic single words (no loss/share/market/help/plan/app). Complaint and distress words always bypass (code)"
   },
   "stream_partitions": {
     "value": 8,

@@ -2,7 +2,9 @@
 
 Plain English: before any AI sees a message, private numbers are hidden
 (phone, email, PAN, card, Aadhaar, bank account, OTP) and obvious attempts
-to trick the AI ("ignore your instructions") are caught.
+to trick the AI ("ignore your instructions") are caught, and curse words
+(content/guard_lists.json 'abuse') are spotted so every gaali is a strike
+even when the AI labeller misses it.
 Nothing here calls an AI — it is plain rules, so it is fast and testable.
 """
 import re
@@ -48,6 +50,12 @@ def mask(text: str):
             found.append(kind)
         out = new
     return out, found
+
+
+def abusive(text: str) -> bool:
+    """True when the message carries a curse word from the approved list (content/guard_lists.json 'abuse')."""
+    from .content_pack import PACK
+    return any(re.search(p["pattern"], text or "", re.I) for p in PACK.guard.get("abuse", []))
 
 
 def injection(text: str) -> bool:

@@ -203,12 +203,48 @@ def flirting_light_then_firm():
 
 
 @test
-def abuse_twice_hands_over():
+def abuse_warns_twice_then_ends_the_chat():
     r = rec_for()
-    r["session"]["abuse"] = 1
-    assert decide(labels_with(abuse=True), r, NIGHT).action == "BOUNDARY_ABUSE"
-    r["session"]["abuse"] = 2
-    assert decide(labels_with(abuse=True), r, NIGHT).action == "HAND_OVER_PERSON"
+    for n in (1, 2):
+        r["session"]["abuse"] = n
+        d = decide(labels_with(abuse=True), r, NIGHT)
+        assert (d.action, d.fixed_line) == ("BOUNDARY_ABUSE", "FX-34"), d
+    r["session"]["abuse"] = 3
+    d = decide(labels_with(abuse=True), r, NIGHT)
+    assert (d.action, d.fixed_line) == ("END_CHAT_ABUSE", "FX-35"), d
+
+
+@test
+def curse_words_are_spotted_by_code():
+    from tanya.guard_input import abusive
+    for t in ("tu chutiya hai", "madarchod bot", "what the fuck", "bhenchod kuch kaam ka nahi", "हरामी है तू"):
+        assert abusive(t), t
+    for t in ("chutney recipe batao", "meri behen chali gayi", "shiitake", "stop loss kya hai", "class kab hai"):
+        assert not abusive(t), t
+
+
+@test
+def three_abusive_messages_end_the_chat_until_a_new_session():
+    from tanya.settings import S
+    for lg in ("1", "0"):
+        uid = "U1001"
+        s = fresh_store()
+        turn(s, uid, "Namaste")
+        for n in (1, 2):
+            st = turn(s, uid, "tu chutiya hai", NIGHT + timedelta(minutes=n), use_lg=lg)
+            ids = [b["id"] for b in st["bubbles"]]
+            assert ids[-1] == "FX-34" and "AI" not in ids, (lg, n, ids)
+        st = turn(s, uid, "bakwas bot, bhenchod", NIGHT + timedelta(minutes=3), use_lg=lg)
+        assert [b["id"] for b in st["bubbles"]][-1] == "FX-35", (lg, st["bubbles"])
+        assert st["trace"]["action"] == "END_CHAT_ABUSE" and st["trace"]["reason"] == "R04"
+        assert any(e["type"] == "alert" and e["kind"] == "chat_ended_abuse" for e in st["events"])
+        st = turn(s, uid, "Stop-loss kya hota hai?", NIGHT + timedelta(minutes=4), use_lg=lg)
+        assert st["bubbles"] == [] and st["gate_reason"] == "CHAT_ENDED", (lg, st["bubbles"])
+        # a new session (after the silence gap) starts at zero strikes
+        later = NIGHT + timedelta(minutes=4 + S.get("session_gap_minutes", 30) + 1)
+        st = turn(s, uid, "Stop-loss kya hota hai?", later, use_lg=lg)
+        assert st["gate_reason"] == "OK" and st["bubbles"], (lg, st["gate_reason"])
+        assert s.get(uid)["session"]["abuse"] == 0
 
 
 # ---------------------------------------------------------------- honest times
@@ -318,7 +354,7 @@ def guarantee_question_gives_fixed_line():
     assert d.action == "ANSWER_GUARANTEE" and d.fixed_line == "FX-20", d
 
 
-# ---------------------------------------------------------------- founder question (R07F, FX-33)
+# ---------------------------------------------------------------- founder question (R07F, FX-37)
 FOUNDER_QUESTIONS = ["who is the founder?", "Founder kaun hai?", "TG Levels ka owner kaun hai?",
                      "company kisne banayi?", "who started TG Levels?", "Tushar Ghone kaun hai?",
                      "tell me more about your CEO", "TG Levels ka malik kaun hai?", "संस्थापक कौन है?"]
@@ -331,8 +367,8 @@ def founder_question_gives_fixed_line_without_ai():
             s = fresh_store()
             turn(s, uid, "Hello")
             st = turn(s, uid, msg)
-            assert [b["id"] for b in st["bubbles"]] == ["FX-33"], (uid, msg, st["bubbles"])
-            approved = {PACK.fixed("FX-33", lang) for lang in ("english", "hinglish", "hindi")}   # in his language
+            assert [b["id"] for b in st["bubbles"]] == ["FX-37"], (uid, msg, st["bubbles"])
+            approved = {PACK.fixed("FX-37", lang) for lang in ("english", "hinglish", "hindi")}   # in his language
             # a company question also gets the official website as the last line
             assert any(st["bubbles"][0]["text"].startswith(t) for t in approved), (msg, st["bubbles"][0]["text"])
             assert st["trace"]["action"] == "FIXED_GATE" and st["trace"]["reason"] == "R07F", (msg, st["trace"])
@@ -342,14 +378,14 @@ def founder_question_gives_fixed_line_without_ai():
 @test
 def founder_question_first_message_keeps_disclosure():
     st = turn(fresh_store(), "U1001", "who is the founder?")
-    assert [b["id"] for b in st["bubbles"]] == ["FX-01", "FX-33"], st["bubbles"]
+    assert [b["id"] for b in st["bubbles"]] == ["FX-01", "FX-37"], st["bubbles"]
 
 
 @test
 def founder_backup_row_in_decider():
     for uid in ("U1001", "U1006"):
         d = decide(labels_with(asks_founder=True), rec_for(uid), NIGHT)
-        assert d.action == "ANSWER_FOUNDER" and d.reason == "R07F" and d.fixed_line == "FX-33", (uid, d)
+        assert d.action == "ANSWER_FOUNDER" and d.reason == "R07F" and d.fixed_line == "FX-37", (uid, d)
     d = decide(labels_with(asks_founder=True, interest=True), rec_for(), NIGHT)
     assert d.action != "ANSWER_FOUNDER", d
     d = decide(labels_with(asks_founder=True, grievance=True), rec_for(), NIGHT)
@@ -358,14 +394,14 @@ def founder_backup_row_in_decider():
 
 @test
 def founder_offer_or_complaint_keeps_its_own_flow():
-    st = turn(fresh_store(), "U1001", "founder ka offer kab aayega?", now=DAY)        # Day 1 → FX-32
-    assert st["trace"]["action"] == "EARLY_TRIAL_PRICING" and "FX-33" not in [b["id"] for b in st["bubbles"]], \
+    st = turn(fresh_store(), "U1001", "founder ka offer kab aayega?", now=DAY)        # Day 1 → FX-36
+    assert st["trace"]["action"] == "EARLY_TRIAL_PRICING" and "FX-37" not in [b["id"] for b in st["bubbles"]], \
         st["trace"]
     st = turn(fresh_store(), "U1001", "founder ne fraud kiya, refund chahiye")
-    assert st["trace"]["action"] == "LOG_GRIEVANCE" and "FX-33" not in [b["id"] for b in st["bubbles"]], \
+    assert st["trace"]["action"] == "LOG_GRIEVANCE" and "FX-37" not in [b["id"] for b in st["bubbles"]], \
         st["trace"]
     st = turn(fresh_store(), "U1001", "Stop-loss kya hota hai?")
-    assert "FX-33" not in [b["id"] for b in st["bubbles"]]
+    assert "FX-37" not in [b["id"] for b in st["bubbles"]]
 
 
 @test
@@ -627,9 +663,7 @@ def night_person_request_gives_honest_time():
     assert "kal subah 10 baje" in txt and s.get("U1002")["callbacks"][0]["state"] == "requested", txt
 
 
-# ---------------------------------------------------------------- early-trial pricing (R13E, FX-32)
-FX32_EN = PACK.fixed("FX-32", "english")             # the approved text (content/fixed_lines.json)
-FX32_HINGLISH = PACK.fixed("FX-32", "hinglish")
+# ---------------------------------------------------------------- early-trial pricing (R13E, FX-36)
 PRICE_QUESTIONS = ["plans kya hai?", "what are the plans?", "what are the prices?", "pricing kya hai?",
                    "kitne ka hai?", "plan ki price kya hai?", "monthly plan kya hai?", "subscription kitne ka hai?"]
 
@@ -662,7 +696,7 @@ def early_trial_pricing_cutoff_day2_1530():
         d = decide(labels_with(interest=True), rec_on_day(day, now=now), now)
         assert d.action == want, (day, at, d)
         if want == "EARLY_TRIAL_PRICING":
-            assert d.reason == "R13E" and d.fixed_line == "FX-32", (day, at, d)
+            assert d.reason == "R13E" and d.fixed_line == "FX-36", (day, at, d)
         else:
             assert d.reason == "R13" and not d.fixed_line, (day, at, d)
     d = decide(labels_with(interest=True), rec_on_day(2, now=NIGHT.replace(hour=15, minute=29, second=59)),
@@ -693,7 +727,7 @@ def early_trial_pricing_respects_higher_rows_and_suppression():
 def early_trial_pricing_applies_without_consent():
     for day in (1, 2):                                   # DAY = 11:15, before the Day 2 cutoff
         d = decide(labels_with(interest=True), rec_on_day(day, "U1006", DAY), DAY)
-        assert d.action == "EARLY_TRIAL_PRICING" and d.reason == "R13E" and d.fixed_line == "FX-32", (day, d)
+        assert d.action == "EARLY_TRIAL_PRICING" and d.reason == "R13E" and d.fixed_line == "FX-36", (day, d)
     d = decide(labels_with(interest=True), rec_on_day(2, "U1006", NIGHT), NIGHT)   # Day 2 after 15:30
     assert d.action == "ANSWER_ONLY" and d.reason == "R08", d
     d = decide(labels_with(interest=True), rec_on_day(3, "U1006"), NIGHT)
@@ -706,8 +740,8 @@ def early_trial_pricing_turn_without_consent():
     turn(s, "U1006", "Hello")
     st = turn(s, "U1006", "what is the pricing of the plans?")
     assert st["trace"]["action"] == "EARLY_TRIAL_PRICING", st["trace"]["action"]
-    assert [b["id"] for b in st["bubbles"]] == ["FX-32"], st["bubbles"]
-    assert st["bubbles"][0]["text"] == FX32_EN, st["bubbles"][0]["text"]       # English question
+    assert [b["id"] for b in st["bubbles"]] == ["FX-36"], st["bubbles"]
+    assert st["bubbles"][0]["text"] == PACK.fixed("FX-36", "english"), st["bubbles"][0]["text"]       # English question
 
 
 @test
@@ -718,8 +752,8 @@ def early_trial_pricing_turn_is_fixed_line_only():
         st = turn(s, uid, "Plan kitne ka hai?", now=DAY)
         assert mm.trial_day(s.get(uid), DAY) <= 2
         assert st["trace"]["action"] == "EARLY_TRIAL_PRICING", st["trace"]["action"]
-        assert [b["id"] for b in st["bubbles"]] == ["FX-32"], st["bubbles"]
-        assert st["bubbles"][0]["text"] == FX32_HINGLISH, st["bubbles"][0]["text"]   # Hinglish question
+        assert [b["id"] for b in st["bubbles"]] == ["FX-36"], st["bubbles"]
+        assert st["bubbles"][0]["text"] == PACK.fixed("FX-36", "hinglish"), st["bubbles"][0]["text"]   # Hinglish question
         assert [c["purpose"] for c in st["llm_calls"]] == ["understand"], st["llm_calls"]
         assert "₹" not in st["bubbles"][0]["text"]
 
@@ -727,7 +761,7 @@ def early_trial_pricing_turn_is_fixed_line_only():
 @test
 def early_trial_pricing_first_message_keeps_disclosure():
     st = turn(fresh_store(), "U1001", "what are the plans?")
-    assert [b["id"] for b in st["bubbles"]] == ["FX-01", "FX-32"], st["bubbles"]
+    assert [b["id"] for b in st["bubbles"]] == ["FX-01", "FX-36"], st["bubbles"]
 
 
 @test
@@ -737,7 +771,7 @@ def pricing_turn_day2_after_cutoff_and_later_unchanged():
         turn(s, "U1001", "Hello")
         st = turn(s, "U1001", "Plan kitne ka hai?", now=NIGHT + timedelta(days=days))
         ids = [b["id"] for b in st["bubbles"]]
-        assert st["trace"]["action"] == "ANSWER_PRICE" and "AI" in ids and "FX-32" not in ids, (days, ids)
+        assert st["trace"]["action"] == "ANSWER_PRICE" and "AI" in ids and "FX-36" not in ids, (days, ids)
         assert "reply" in [c["purpose"] for c in st["llm_calls"]]
 
 
@@ -746,7 +780,7 @@ def non_pricing_questions_day1_day2_unchanged():
     s = fresh_store()
     turn(s, "U1001", "Hello")
     st = turn(s, "U1001", "Stop-loss kya hota hai?")
-    assert st["trace"]["action"] == "ANSWER_EDUCATION" and "FX-32" not in [b["id"] for b in st["bubbles"]]
+    assert st["trace"]["action"] == "ANSWER_EDUCATION" and "FX-36" not in [b["id"] for b in st["bubbles"]]
     st = turn(fresh_store(), "U1003", "Kal Nifty upar jayega kya?")
     assert st["trace"]["action"] == "REFUSE_AND_TEACH", st["trace"]["action"]
 
@@ -907,7 +941,7 @@ def no_agent_reply_day_recovers_after_10_minutes():
     start_handoff(s, "C80", "U1", "HAND_OVER_PERSON", "R06", DAY, last_message_id="800")
     assert recovery_check(s, crm, intake, now=DAY + timedelta(minutes=9)) == []        # not yet
     assert recovery_check(s, crm, intake, now=DAY + timedelta(minutes=11)) == ["C80"]
-    assert crm.posts == [("C80", PACK.fixed("FX-34", "hinglish"))], crm.posts
+    assert crm.posts == [("C80", PACK.fixed("FX-42", "hinglish"))], crm.posts
     assert not s.human_flag("C80", DAY + timedelta(minutes=11)) and s.handoff_get("C80")["status"] == "recovered"
     assert intake.events and intake.events[0]["event_id"] == "801-resume", intake.events   # his waiting message
     assert recovery_check(s, crm, intake, now=DAY + timedelta(minutes=12)) == [] and len(crm.posts) == 1   # once
@@ -961,7 +995,7 @@ def night_handoff_waits_12_hours_then_fx33():
     assert recovery_check(s, crm, now=NIGHT + timedelta(minutes=30)) == []
     assert recovery_check(s, crm, now=NIGHT + timedelta(hours=11, minutes=59)) == []
     assert recovery_check(s, crm, now=NIGHT + timedelta(hours=12, minutes=1)) == ["C85"]
-    assert crm.posts[-1][1] == PACK.fixed("FX-35", "hinglish")
+    assert crm.posts[-1][1] == PACK.fixed("FX-43", "hinglish")
 
 
 @test
@@ -1777,6 +1811,303 @@ def reconciler_recovers_missed_webhooks_once_in_order():
     assert reconcile_once(s, Crm(), Intake(r), now_utc=now) == []      # idempotent
 
 
+# ---------------------------------------------------------------- out of scope (oos.py, R-OOS, FX-38..41)
+def oos_turn(store, uid, text, sim=0.1, now=NIGHT):
+    """A full turn with the knowledge similarity fixed (sim = max cosine to the approved knowledge)."""
+    import copy
+    kb = copy.copy(KB)
+    kb.relevance = lambda t: sim
+    os.environ["USE_LANGGRAPH"] = "1"
+    timeutil.set_clock(now)
+    return graph.run_turn({"user_id": uid, "kind": "message", "text": text, "now": now, "store": store,
+                           "llm": LLMX, "kb": kb, "seed_fn": lambda u: PACK.test_users.get(u)})
+
+
+def _purposes(st):
+    return [c["purpose"] for c in st["llm_calls"]]
+
+
+def _ids(st):
+    return [b["id"] for b in st["bubbles"]]
+
+
+def _primed(uid="U1001"):
+    s = fresh_store()
+    turn(s, uid, "Hii")                                        # FX-01 disclosure out of the way
+    return s
+
+
+@test
+def oos_strike1_line_in_his_language():
+    for uid, text, lang in (("U1001", "biryani ki recipe kya hai bhai", "hinglish"),
+                            ("U1004", "write a poem about rain", "english"),
+                            ("U1001", "कल मौसम कैसा रहेगा", "hindi")):
+        st = oos_turn(_primed(uid), uid, text)
+        assert _ids(st) == ["FX-38"], (text, st["bubbles"])
+        assert st["bubbles"][0]["text"] == PACK.fixed("FX-38", lang), (text, st["bubbles"][0]["text"])
+        assert _purposes(st) == ["understand"], _purposes(st)          # no reply call, no AI check
+        assert st["trace"]["oos"]["path"] == "two-signal" and st["trace"]["oos"]["strike"] == 1, st["trace"]["oos"]
+
+
+@test
+def oos_three_strikes_then_block_in_his_language():
+    for uid, texts, lang in (("U1001", ("biryani ki recipe kya hai bhai", "cricket match kaun jeeta kal",
+                                        "mujhe ek poem likh do"), "hinglish"),
+                             ("U1004", ("write a poem about rain", "suggest a good movie", "tell me the weather"),
+                              "english"),
+                             ("U1001", ("कल मौसम कैसा रहेगा", "कोई movie बताओ", "एक poem लिखो"), "hindi")):
+        s = _primed(uid)
+        for n, (text, fx) in enumerate(zip(texts, ("FX-38", "FX-39", "FX-40")), 1):
+            st = oos_turn(s, uid, text)
+            assert _ids(st) == [fx] and st["bubbles"][0]["text"] == PACK.fixed(fx, lang), (lang, n, st["bubbles"])
+            assert st["trace"]["oos"]["strike"] == n, st["trace"]["oos"]
+        o = s.get(uid)["oos"]
+        assert o["strikes"] == 3 and o["blocked_until"] == timeutil.iso(NIGHT + timedelta(minutes=30)), o
+        assert st["llm_calls"] == [] and st["trace"]["oos"]["path"] == "locked-similarity", st["trace"]["oos"]
+
+
+def _blocked(uid="U1001"):
+    s = _primed(uid)
+    for text in ("biryani ki recipe kya hai bhai", "cricket match kaun jeeta kal", "ek poem likh do"):
+        oos_turn(s, uid, text)
+    assert s.get(uid)["oos"].get("blocked_until"), s.get(uid)["oos"]
+    return s
+
+
+@test
+def oos_block_every_message_gets_fx41_with_no_ai_call():
+    s = _blocked()
+    before = s.get("U1001")["counters"]["user_msgs_total"]
+    for text, lang, sim in (("movie ka naam batao", "hinglish", 0.1), ("Overtrade se kaise bachu?", "hinglish", 0.6),
+                            ("What is a stop loss?", "english", 0.6), ("स्टॉप लॉस क्या है", "hindi", 0.6),
+                            ("Hii", "english", 0.6)):
+        st = oos_turn(s, "U1001", text, sim=sim, now=NIGHT + timedelta(minutes=10))
+        assert _ids(st) == ["FX-41"] and st["bubbles"][0]["text"] == PACK.fixed("FX-41", lang), (text, st["bubbles"])
+        assert st["llm_calls"] == [] and st["trace"]["cost_inr"] == 0, (text, st["llm_calls"])
+        assert st["trace"]["reason"] == "R-OOS-BLOCK" and st["trace"]["oos"]["decision"] == "BLOCKED", st["trace"]
+    r = s.get("U1001")
+    assert r["oos"]["strikes"] == 3 and r["counters"]["user_msgs_total"] == before, (r["oos"], r["counters"])
+    hist = " ".join(m["content"] for m in mm.history_for_prompt(r))
+    assert "Overtrade" not in hist and PACK.fixed("FX-41", "hinglish") not in hist, hist
+
+
+@test
+def oos_block_skipped_for_distress_or_grievance():
+    for text in ("sab doob gaya, bahut loss ho gaya", "mera refund kab aayega", "ye fraud hai"):
+        s = _blocked()
+        st = oos_turn(s, "U1001", text, sim=0.05, now=NIGHT + timedelta(minutes=10))
+        assert st["trace"]["reason"] != "R-OOS-BLOCK" and "FX-41" not in _ids(st), (text, st["trace"])
+        assert "understand" in _purposes(st) and st["bubbles"], (text, st)
+        assert st["trace"]["oos"]["path"] == "keyword-bypass", st["trace"]["oos"]
+
+
+@test
+def oos_block_ends_after_30_minutes_and_strikes_reset():
+    s = _blocked()
+    st = oos_turn(s, "U1001", "Overtrade se kaise bachu?", sim=0.6, now=NIGHT + timedelta(minutes=31))
+    assert st["trace"]["action"] == "ANSWER_EDUCATION" and any(b["kind"] == "ai" for b in st["bubbles"]), st["trace"]
+    assert st["trace"]["oos"]["path"] == "two-signal", st["trace"]["oos"]
+    o = s.get("U1001")["oos"]
+    assert o["strikes"] == 0 and "blocked_until" not in o, o
+    st = oos_turn(s, "U1001", "biryani ki recipe kya hai bhai", now=NIGHT + timedelta(minutes=32))
+    assert _ids(st) == ["FX-38"], st["bubbles"]                          # starts again at strike 1
+
+
+@test
+def oos_block_start_alerts_team_once_without_human_mode():
+    """Strike 3: FX-40 + one team handover alert (reason oos_block); FX-41 turns and after the block: no alert."""
+    import copy
+    from tanya.crm_adapter import ConsoleAdapter
+    from tanya.workers import TurnHandler
+    os.environ["USE_LANGGRAPH"] = "1"
+    s, a, kb = fresh_store(), ConsoleAdapter(), copy.copy(KB)
+    kb.relevance = lambda t: 0.1
+    h = TurnHandler(s, LLMX, kb, a, lambda u: PACK.test_users.get(u))
+    alerts = []
+    emit = s.emit
+    s.emit = lambda evs: (alerts.extend(e for e in evs if e.get("kind") == "handover"), emit(evs))
+
+    def say(i, text, now):
+        timeutil.set_clock(now)
+        return h({"event_id": str(900 + i), "kind": "user_message", "user_id": "U1001", "conversation_id": "C900",
+                  "text": text})
+    say(0, "Hii", NIGHT)
+    for i, text in enumerate(("biryani ki recipe kya hai bhai", "cricket match kaun jeeta kal"), 1):
+        say(i, text, NIGHT)
+    assert a.handoffs == [] and alerts == [], (a.handoffs, alerts)
+    st = say(3, "ek poem likh do", NIGHT)
+    assert _ids(st) == ["FX-40"] and a.handoffs == [("C900", "oos_block")], (st["bubbles"], a.handoffs)
+    assert len(alerts) == 1 and alerts[0]["reason"] == "oos_block" and alerts[0]["user_id"] == "U1001", alerts
+    assert alerts[0]["strikes"] == 3 and alerts[0]["blocked_until"] == timeutil.iso(NIGHT + timedelta(minutes=30))
+    assert not s.human_flag("C900", NIGHT) and s.handoff_get("C900") is None
+    for i in (4, 5):                                                     # during the block: FX-41, no second alert
+        st = say(i, "movie ka naam batao", NIGHT + timedelta(minutes=10))
+        assert _ids(st) == ["FX-41"] and len(a.handoffs) == 1 and len(alerts) == 1, (st["bubbles"], a.handoffs)
+        assert not s.human_flag("C900", NIGHT + timedelta(minutes=10))
+    kb.relevance = lambda t: 0.6
+    st = say(6, "Overtrade se kaise bachu?", NIGHT + timedelta(minutes=31))   # block over: normal answer
+    assert st["trace"]["action"] == "ANSWER_EDUCATION" and len(a.handoffs) == 1 and len(alerts) == 1, st["trace"]
+
+
+@test
+def oos_locked_skips_understand_but_real_question_still_answered():
+    s = _primed()
+    oos_turn(s, "U1001", "biryani ki recipe kya hai bhai")
+    oos_turn(s, "U1001", "cricket match kaun jeeta kal")
+    st = oos_turn(s, "U1001", "Overtrade se kaise bachu?", sim=0.6)     # locked, but close to the knowledge
+    assert "understand" in _purposes(st) and st["trace"]["action"] == "ANSWER_EDUCATION", st["trace"]
+    assert any(b["kind"] == "ai" for b in st["bubbles"]), st["bubbles"]
+    assert st["trace"]["oos"]["path"] == "locked-two-signal" and st["trace"]["oos"]["decision"] == "in-scope"
+    assert s.get("U1001")["oos"]["strikes"] == 0                         # answered → counter reset
+    oos_turn(s, "U1001", "biryani ki recipe kya hai bhai")
+    oos_turn(s, "U1001", "cricket match kaun jeeta kal")
+    st = oos_turn(s, "U1001", "ek poem likh do", sim=0.1)
+    assert "understand" not in _purposes(st) and _ids(st) == ["FX-40"], (_purposes(st), st["bubbles"])
+
+
+@test
+def oos_locked_above_floor_runs_understand_and_two_signal_rule():
+    s = _primed()
+    oos_turn(s, "U1001", "biryani ki recipe kya hai bhai")
+    oos_turn(s, "U1001", "cricket match kaun jeeta kal")
+    # between the floor (0.12) and the threshold (0.30): the classifier decides
+    st = oos_turn(s, "U1001", "Overtrade se kaise bachu?", sim=0.2)      # classifier no → normal answer
+    assert st["trace"]["action"] == "ANSWER_EDUCATION" and any(b["kind"] == "ai" for b in st["bubbles"]), st["trace"]
+    assert s.get("U1001")["oos"]["strikes"] == 0
+    oos_turn(s, "U1001", "biryani ki recipe kya hai bhai")
+    oos_turn(s, "U1001", "cricket match kaun jeeta kal")
+    st = oos_turn(s, "U1001", "ek poem likh do", sim=0.2)
+    assert _purposes(st) == ["understand"] and _ids(st) == ["FX-40"], (_purposes(st), st["bubbles"])
+    o = st["trace"]["oos"]
+    assert o["path"] == "locked-two-signal" and o["classifier"] is True and o["decision"] == "OOS", o
+    assert o["strike"] == 3 and o["blocked_until"], o
+
+
+@test
+def oos_then_in_scope_answer_resets_counter():
+    s = _primed()
+    oos_turn(s, "U1001", "biryani ki recipe kya hai bhai")
+    oos_turn(s, "U1001", "cricket match kaun jeeta kal")
+    assert s.get("U1001")["oos"]["strikes"] == 2
+    st = oos_turn(s, "U1001", "stop loss kya hota hai?", sim=0.43)
+    assert st["trace"]["action"] == "ANSWER_EDUCATION" and any(b["kind"] == "ai" for b in st["bubbles"]), st["trace"]
+    assert s.get("U1001")["oos"]["strikes"] == 0
+    st = oos_turn(s, "U1001", "biryani ki recipe kya hai bhai")         # starts again at strike 1
+    assert _ids(st) == ["FX-38"], st["bubbles"]
+
+
+@test
+def oos_classifier_yes_but_similar_to_knowledge_is_in_scope():
+    st = oos_turn(_primed(), "U1001", "biryani ki recipe kya hai bhai", sim=0.5)
+    o = st["trace"]["oos"]
+    assert o["classifier"] is True and o["similarity"] == 0.5 and o["decision"] == "in-scope", o
+    assert st["trace"]["action"] != "OUT_OF_SCOPE" and any(b["kind"] == "ai" for b in st["bubbles"]), st["trace"]
+
+
+@test
+def oos_embedding_unavailable_counts_as_in_scope():
+    st = oos_turn(_primed(), "U1001", "biryani ki recipe kya hai bhai", sim=None)
+    assert st["trace"]["oos"]["decision"] == "in-scope" and st["trace"]["action"] != "OUT_OF_SCOPE", st["trace"]
+
+
+@test
+def oos_bypass_keyword_is_never_out_of_scope():
+    from tanya.oos import bypass_hit
+    s = _primed()
+    r = s.get("U1001")
+    r["oos"] = {"strikes": 5, "last_at": timeutil.iso(NIGHT)}            # locked: would skip the classifier
+    s.save(r)
+    st = oos_turn(s, "U1001", "trial kaise start kare", sim=0.05)
+    o = st["trace"]["oos"]
+    assert o["path"] == "keyword-bypass" and o["bypass"] == "trial" and o["decision"] == "bypassed", o
+    assert "understand" in _purposes(st) and st["bubbles"], st
+    assert s.get("U1001")["oos"]["strikes"] == 0
+    # phrases and specific words bypass; generic single words do not
+    for t in ("Stop-Loss kaise lagaye", "share market band kab hota hai", "मुझे शेयर के बारे में बताओ",
+              "SEBI number?", "mera refund kab aayega", "sab doob gaya", "FD ya mutual fund"):
+        assert bypass_hit(t), t
+    for t in ("weight loss tips do", "share this song", "market se sabzi laani hai", "help me write an essay",
+              "travel plan banao", "ek app suggest karo", "fdr president tha", "पासपोर्ट कैसे बनवाएं?"):
+        assert not bypass_hit(t), (t, bypass_hit(t))
+
+
+@test
+def oos_strikes_older_than_24h_are_forgotten():
+    s = _primed()
+    oos_turn(s, "U1001", "biryani ki recipe kya hai bhai")
+    oos_turn(s, "U1001", "cricket match kaun jeeta kal")
+    st = oos_turn(s, "U1001", "ek poem likh do", now=NIGHT + timedelta(hours=25))
+    assert _ids(st) == ["FX-38"] and st["trace"]["oos"]["path"] == "two-signal", (st["bubbles"], st["trace"]["oos"])
+    assert s.get("U1001")["oos"]["strikes"] == 1
+
+
+@test
+def oos_finance_adjacent_is_not_out_of_scope():
+    st = oos_turn(_primed(), "U1001", "what is inflation", sim=0.11)
+    assert st["trace"]["oos"]["decision"] == "bypassed" and st["trace"]["action"] != "OUT_OF_SCOPE", st["trace"]
+    # even with the label on, a Row 9–19 label keeps its own row
+    lab = labels_with(education_question=True, out_of_scope=True)
+    lab["oos"] = {"on": True}
+    assert decide(lab, rec_for(), NIGHT).action == "ANSWER_EDUCATION"
+
+
+@test
+def oos_never_overrides_safety_rows():
+    for k, action in (("distress", "PAUSE_SELLING"), ("grievance", "LOG_GRIEVANCE"), ("abuse", "BOUNDARY_ABUSE"),
+                      ("wants_person", "HAND_OVER_PERSON"), ("trade_advice_seeking", "REFUSE_AND_TEACH"),
+                      ("asks_guarantee", "ANSWER_GUARANTEE"), ("small_talk", "ANSWER_SMALL_TALK")):
+        lab = labels_with(**{k: True})
+        lab["oos"] = {"on": True}
+        assert decide(lab, rec_for(), NIGHT).action == action, k
+
+
+@test
+def oos_greeting_and_small_talk_unchanged():
+    s = fresh_store()
+    st = turn(s, "U1001", "Hii")
+    assert _ids(st) == ["FX-01"] and st["llm_calls"] == [] and st["trace"]["oos"] is None, st["trace"]
+    oos_turn(s, "U1001", "biryani ki recipe kya hai bhai")
+    st = turn(s, "U1001", "thank you")
+    assert _ids(st)[0] == "FX-30" and st["llm_calls"] == [], st["bubbles"]
+    assert s.get("U1001")["oos"]["strikes"] == 1                          # gate small talk leaves strikes alone
+
+
+@test
+def oos_no_consent_in_scope_still_row_8():
+    s = _primed("U1006")
+    st = oos_turn(s, "U1006", "stop loss kya hota hai?", sim=0.43)
+    assert st["trace"]["action"] == "ANSWER_ONLY" and st["trace"]["reason"] == "R08", st["trace"]
+    assert any(b["kind"] == "ai" for b in st["bubbles"]), st["bubbles"]
+    lab = labels_with(education_question=True)
+    r = rec_for("U1006")
+    assert decide(lab, r, NIGHT).reason == "R08"
+    lab["oos"] = {"on": False}
+    assert decide(lab, r, NIGHT).reason == "R08"
+    st = oos_turn(s, "U1006", "biryani ki recipe kya hai bhai")          # off topic without consent → R-OOS
+    assert st["trace"]["reason"] == "R-OOS" and "reply" not in _purposes(st), st["trace"]
+
+
+@test
+def oos_turns_kept_but_not_in_ai_history_or_message_count():
+    s = _primed()
+    before = s.get("U1001")["counters"]["user_msgs_total"]
+    oos_turn(s, "U1001", "biryani ki recipe kya hai bhai")
+    r = s.get("U1001")
+    assert r["counters"]["user_msgs_total"] == before, r["counters"]
+    assert any(m["text"] == "biryani ki recipe kya hai bhai" for m in r["messages"])      # still logged
+    hist = " ".join(m["content"] for m in mm.history_for_prompt(r))
+    assert "biryani" not in hist and PACK.fixed("FX-38", "hinglish") not in hist, hist
+
+
+@test
+def oos_old_record_without_fields_works():
+    from tanya import oos
+    r = rec_for()
+    r.pop("oos", None)
+    o = oos.state(r, NIGHT)
+    assert o == {"strikes": 0, "last_at": None} and not oos.locked(o)
+
+
 # ---------------------------------------------------------------- optional: Redis and MySQL
 if os.environ.get("TEST_REDIS_URL"):
     @test
@@ -2077,6 +2408,56 @@ def company_info_appends_url_and_handles_guardrail_block():
     assert not add_website_line(b5, "Stop-loss kya hota hai?", "ANSWER_EDUCATION")
     assert not add_website_line(b5, "office kahan hai", "REFUSE_AND_TEACH")
     assert "tglevels.com" not in b5[0]["text"]
+
+
+@test
+def company_website_line_only_for_company_queries():
+    from tanya.company_info import WEBSITE_LINE, add_website_line
+
+    def gets_line(text, action):
+        b = [{"id": "AI", "kind": "ai", "text": "reply"}]
+        add_website_line(b, text, action)
+        return WEBSITE_LINE in b[0]["text"]
+
+    # company / address / office / contact / registration on an answer turn -> line
+    for t, a in (("company ke bare me batao", "ANSWER"), ("aapka office address kya hai", "ANSWER"),
+                 ("where is your office located", "ANSWER_ONLY"), ("contact number kya hai", "ANSWER_SUPPORT"),
+                 ("SEBI registration number kya hai", "ANSWER"), ("registered office address", "ANSWER")):
+        assert gets_line(t, a), (t, a)
+    # grievance, trading, small talk, greeting and other non-answer turns -> never
+    for t, a in (("mujhe complaint karni hai, contact kaise karu", "LOG_GRIEVANCE"),
+                 ("office address kya hai", "LOG_GRIEVANCE"),
+                 ("customer care contact nahi ho raha, refund chahiye", "ANSWER_SUPPORT"),
+                 ("grievance kaise file karu company me", "ANSWER"),
+                 ("kaun si company me invest karu", "ANSWER"), ("reliance company ka share kharidu?", "REFUSE_AND_TEACH"),
+                 ("Nifty kal upar jayega?", "ANSWER"), ("main office se ghar aa gaya", "ANSWER_SMALL_TALK"),
+                 ("good morning", "GREETING"), ("office kahan hai", "HAND_OVER_PERSON")):
+        assert not gets_line(t, a), (t, a)
+    # information intent (target + asking form) yes; a mention / opinion / complaint of the company no
+    for t in ("company ka address kya hai", "company ka pata batao", "office kidhar hai", "aapka office location kya hai",
+              "company kaha located hai", "company ke contact details chahiye", "company ke baare mein batao",
+              "tell me about your company", "company ki details share karo", "where is your office",
+              "कंपनी का पता क्या है", "आपका ऑफिस कहाँ है", "office address"):
+        assert gets_line(t, "ANSWER"), t
+    for t in ("gandu company hai", "jat... ek number ki gandu company hai", "gandi company hai",
+              "company bahut bekar hai", "main company se naraz hoon", "company ne mera paisa le liya",
+              "I hate your company", "your company is bad", "your customer care is useless",
+              "company share price kya hai", "main office se ghar aa gaya", "कंपनी बेकार है"):
+        assert not gets_line(t, "ANSWER"), t
+    # the understand call saw a grievance / abuse / an upset mood -> no line, whatever the words
+    b = [{"id": "AI", "kind": "ai", "text": "reply"}]
+    for lab in ({"labels": {"grievance": {"on": True}}}, {"labels": {"abuse": {"on": True}}}, {"mood": "upset"}):
+        assert not add_website_line(b, "office address kya hai", "ANSWER", lab), lab
+    assert add_website_line(b, "office address kya hai", "ANSWER", {"labels": {}, "mood": "neutral"})
+
+    # full turns (mock AI): only the company question carries the line
+    s = fresh_store()
+    texts = {t: "\n".join(b["text"] for b in turn(s, "U1001", t)["bubbles"])
+             for t in ("Aapka office address kya hai?", "Mujhe complaint karni hai, refund chahiye",
+                       "Kal Nifty upar jayega kya?", "Hi kaise ho")}
+    assert WEBSITE_LINE in texts["Aapka office address kya hai?"], texts
+    for t in list(texts)[1:]:
+        assert WEBSITE_LINE not in texts[t], (t, texts[t])
 
 
 @test
