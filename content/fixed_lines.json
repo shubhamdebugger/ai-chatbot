@@ -1,5 +1,5 @@
 {
-  "_read_me": "Fixed lines FX-01..FX-18. The AI never writes these. {name}, {case_no}, {when}, {slot_1}, {slot_2}, {plan_line}, {limit}, {sebi_reg_no} are filled by code. Status: DRAFT - for Tushar and compliance approval (input D2).",
+  "_read_me": "Fixed lines FX-01..FX-37. Each FX id is used once (the loader rejects duplicates); FX-21..FX-23 are reserved. The AI never writes these. {name}, {case_no}, {when}, {slot_1}, {slot_2}, {plan_line}, {limit}, {sebi_reg_no} are filled by code. Status: DRAFT - for Tushar and compliance approval (input D2).",
   "FX-01": {
     "moment": "AI disclosure - first message ever",
     "english": "Hi {name}, I'm Tanya — TG Level's(Demo AI Guide). I'll guide you through your trial step by step and answer your questions. Whenever you want a person from our team, just say so.",
@@ -119,20 +119,6 @@
     "english": "Nahi, paise double hone ki guarantee koi SEBI-registered research provider nahi de sakta. Markets uncertain hote hain, aur ‘sure-shot’ ya ‘100%’ ka wada warning sign hai.",
     "hinglish": "Nahi, paise double hone ki guarantee koi SEBI-registered research provider nahi de sakta. Markets uncertain hote hain, aur ‘sure-shot’ ya ‘100%’ ka wada warning sign hai.",
     "hindi": "Nahi, paise double hone ki guarantee koi SEBI-registered research provider nahi de sakta. Markets uncertain hote hain, aur ‘sure-shot’ ya ‘100%’ ka wada warning sign hai."
-  },
-  "FX-33": {
-    "moment": "Founder question - who founded / owns / runs TG Levels (R07F)",
-    "status": "DRAFT",
-    "english": "Tushar Ghone is the Founder and Chief Mentor of TG Levels, and also serves as its CEO and Principal Officer. He is NISM-certified, SEBI-registered, and holds a B.E. from VJTI Mumbai along with a Post Graduate Diploma in Finance.",
-    "hinglish": "Tushar Ghone, TG Levels ke Founder aur Chief Mentor hain, aur saath hi company ke CEO aur Principal Officer bhi hain. Woh NISM-certified aur SEBI-registered hain, aur unhone VJTI Mumbai se B.E. aur Finance mein Post Graduate Diploma kiya hai.",
-    "hindi": "Founder Details Printed"
-  },
-  "FX-32": {
-    "moment": "Plans/pricing question on trial Day 1-2 - prices held back until Day 3 (R13E)",
-    "status": "DRAFT",
-    "english": "TG Levels has various plans, models, and offerings designed to suit different needs. Our founder, Tushar Ghone, will personally explain the available options and offers to you. So, stay tuned — you’ll hear from him soon with all the details.",
-    "hinglish": "TG Levels mein alag-alag plans, models aur offerings available hain, jo different needs ke according hain. In sabhi options aur offers ke baare mein hamare founder, Tushar Ghone, aapko personally explain karenge. Isliye stay tuned — aapko jald hi unki taraf se poori details milengi.",
-    "hindi": "TG Levels में अलग-अलग प्लान, मॉडल और ऑफ़रिंग्स उपलब्ध हैं, जो विभिन्न आवश्यकताओं के अनुसार हैं। इन सभी विकल्पों और ऑफ़र्स के बारे में हमारे फ़ाउंडर, तुषार घोणे, आपको व्यक्तिगत रूप से विस्तार से बताएंगे। इसलिए जुड़े रहिए — आपको जल्द ही उनकी ओर से पूरी जानकारी मिलेगी।"
   },
   "FX-24": {
     "moment": "Zero-AI small talk - greeting (after the disclosure)",
@@ -272,5 +258,19 @@
     "english": "I'm sorry, but because of the repeated abusive language I'm ending this chat now. You are welcome to message us again whenever you'd like to talk respectfully. Goodbye.",
     "hinglish": "Maaf kijiye, baar-baar abusive language ke karan main ab yeh chat khatam kar rahi hoon. Jab bhi aap respect ke saath baat karna chahein, aap dobara message kar sakte hain. Dhanyavaad.",
     "hindi": "माफ़ कीजिए, बार-बार अपशब्द कहने की वजह से मैं अब यह चैट समाप्त कर रही हूँ। जब भी आप सम्मान से बात करना चाहें, आप दोबारा मैसेज कर सकते हैं। धन्यवाद।"
+  },
+  "FX-36": {
+    "moment": "Plans/pricing question on trial Day 1-2 - prices held back until Day 3 (R13E)",
+    "status": "DRAFT",
+    "english": "TG Levels has various plans, models, and offerings designed to suit different needs. Our founder, Tushar Ghone, will personally explain the available options and offers to you. So, stay tuned — you’ll hear from him soon with all the details.",
+    "hinglish": "TG Levels mein alag-alag plans, models aur offerings available hain, jo different needs ke according hain. In sabhi options aur offers ke baare mein hamare founder, Tushar Ghone, aapko personally explain karenge. Isliye stay tuned — aapko jald hi unki taraf se poori details milengi.",
+    "hindi": "TG Levels में अलग-अलग प्लान, मॉडल और ऑफ़रिंग्स उपलब्ध हैं, जो विभिन्न आवश्यकताओं के अनुसार हैं। इन सभी विकल्पों और ऑफ़र्स के बारे में हमारे फ़ाउंडर, तुषार घोणे, आपको व्यक्तिगत रूप से विस्तार से बताएंगे। इसलिए जुड़े रहिए — आपको जल्द ही उनकी ओर से पूरी जानकारी मिलेगी।"
+  },
+  "FX-37": {
+    "moment": "Founder question - who founded / owns / runs TG Levels (R07F)",
+    "status": "DRAFT",
+    "english": "Tushar Ghone is the Founder and Chief Mentor of TG Levels, and also serves as its CEO and Principal Officer. He is NISM-certified, SEBI-registered, and holds a B.E. from VJTI Mumbai along with a Post Graduate Diploma in Finance.",
+    "hinglish": "Tushar Ghone, TG Levels ke Founder aur Chief Mentor hain, aur saath hi company ke CEO aur Principal Officer bhi hain. Woh NISM-certified aur SEBI-registered hain, aur unhone VJTI Mumbai se B.E. aur Finance mein Post Graduate Diploma kiya hai.",
+    "hindi": "Founder Details Printed"
   }
 }

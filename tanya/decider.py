@@ -72,7 +72,7 @@ def decide(labels: dict, rec: dict, now, limited: bool = False) -> Decision:
         return Decision("ANSWER_GUARANTEE", "R07G", fixed_line="FX-20")
     # Row 7F — founder question: fixed line, no AI words. Plan / offer questions keep their own rows.
     if _on(labels, "asks_founder") and not _on(labels, "interest") and not _on(labels, "purchase_intent"):
-        return Decision("ANSWER_FOUNDER", "R07F", fixed_line="FX-33")
+        return Decision("ANSWER_FOUNDER", "R07F", fixed_line="FX-37")
     # Kill switch 'limited': general and education only (Architecture §7.5)
     if limited and (_on(labels, "purchase_intent") or _on(labels, "interest") or _on(labels, "support_question")):
         return Decision("LIMITED_MODE", "R-LIMITED", fixed_line="FX-06")
@@ -82,7 +82,7 @@ def decide(labels: dict, rec: dict, now, limited: bool = False) -> Decision:
     if _on(labels, "interest") and not _on(labels, "purchase_intent") \
             and not any(r != "no consent" for r in why) \
             and _prices_hidden(rec, now):
-        return Decision("EARLY_TRIAL_PRICING", "R13E", fixed_line="FX-32")
+        return Decision("EARLY_TRIAL_PRICING", "R13E", fixed_line="FX-36")
     # Row 8 — no consent: answer only
     if not consent:
         d = Decision("ANSWER_ONLY", "R08", tier=tier)

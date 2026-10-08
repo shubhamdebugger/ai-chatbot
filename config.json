@@ -13,7 +13,7 @@
   "early_pricing_hidden_until_trial_day": {
     "value": 2,
     "owner": "Open - early-trial pricing restriction",
-    "note": "Plan/price questions before this trial day, and on it until early_pricing_hidden_until_time, get FX-32 (no prices) instead of ANSWER_PRICE; Day 1 = trial start date"
+    "note": "Plan/price questions before this trial day, and on it until early_pricing_hidden_until_time, get FX-36 (no prices) instead of ANSWER_PRICE; Day 1 = trial start date"
   },
   "early_pricing_hidden_until_time": {
     "value": "15:30",
