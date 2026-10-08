@@ -1689,6 +1689,267 @@ def reconciler_recovers_missed_webhooks_once_in_order():
     assert reconcile_once(s, Crm(), Intake(r), now_utc=now) == []      # idempotent
 
 
+# ---------------------------------------------------------------- out of scope (oos.py, R-OOS, FX-34..37)
+def oos_turn(store, uid, text, sim=0.1, now=NIGHT):
+    """A full turn with the knowledge similarity fixed (sim = max cosine to the approved knowledge)."""
+    import copy
+    kb = copy.copy(KB)
+    kb.relevance = lambda t: sim
+    os.environ["USE_LANGGRAPH"] = "1"
+    timeutil.set_clock(now)
+    return graph.run_turn({"user_id": uid, "kind": "message", "text": text, "now": now, "store": store,
+                           "llm": LLMX, "kb": kb, "seed_fn": lambda u: PACK.test_users.get(u)})
+
+
+def _purposes(st):
+    return [c["purpose"] for c in st["llm_calls"]]
+
+
+def _ids(st):
+    return [b["id"] for b in st["bubbles"]]
+
+
+def _primed(uid="U1001"):
+    s = fresh_store()
+    turn(s, uid, "Hii")                                        # FX-01 disclosure out of the way
+    return s
+
+
+@test
+def oos_strike1_line_in_his_language():
+    for uid, text, lang in (("U1001", "biryani ki recipe kya hai bhai", "hinglish"),
+                            ("U1004", "write a poem about rain", "english"),
+                            ("U1001", "कल मौसम कैसा रहेगा", "hindi")):
+        st = oos_turn(_primed(uid), uid, text)
+        assert _ids(st) == ["FX-34"], (text, st["bubbles"])
+        assert st["bubbles"][0]["text"] == PACK.fixed("FX-34", lang), (text, st["bubbles"][0]["text"])
+        assert _purposes(st) == ["understand"], _purposes(st)          # no reply call, no AI check
+        assert st["trace"]["oos"]["path"] == "two-signal" and st["trace"]["oos"]["strike"] == 1, st["trace"]["oos"]
+
+
+@test
+def oos_three_strikes_then_block_in_his_language():
+    for uid, texts, lang in (("U1001", ("biryani ki recipe kya hai bhai", "cricket match kaun jeeta kal",
+                                        "mujhe ek poem likh do"), "hinglish"),
+                             ("U1004", ("write a poem about rain", "suggest a good movie", "tell me the weather"),
+                              "english"),
+                             ("U1001", ("कल मौसम कैसा रहेगा", "कोई movie बताओ", "एक poem लिखो"), "hindi")):
+        s = _primed(uid)
+        for n, (text, fx) in enumerate(zip(texts, ("FX-34", "FX-35", "FX-36")), 1):
+            st = oos_turn(s, uid, text)
+            assert _ids(st) == [fx] and st["bubbles"][0]["text"] == PACK.fixed(fx, lang), (lang, n, st["bubbles"])
+            assert st["trace"]["oos"]["strike"] == n, st["trace"]["oos"]
+        o = s.get(uid)["oos"]
+        assert o["strikes"] == 3 and o["blocked_until"] == timeutil.iso(NIGHT + timedelta(minutes=30)), o
+        assert st["llm_calls"] == [] and st["trace"]["oos"]["path"] == "locked-similarity", st["trace"]["oos"]
+
+
+def _blocked(uid="U1001"):
+    s = _primed(uid)
+    for text in ("biryani ki recipe kya hai bhai", "cricket match kaun jeeta kal", "ek poem likh do"):
+        oos_turn(s, uid, text)
+    assert s.get(uid)["oos"].get("blocked_until"), s.get(uid)["oos"]
+    return s
+
+
+@test
+def oos_block_every_message_gets_fx37_with_no_ai_call():
+    s = _blocked()
+    before = s.get("U1001")["counters"]["user_msgs_total"]
+    for text, lang, sim in (("movie ka naam batao", "hinglish", 0.1), ("Overtrade se kaise bachu?", "hinglish", 0.6),
+                            ("What is a stop loss?", "english", 0.6), ("स्टॉप लॉस क्या है", "hindi", 0.6),
+                            ("Hii", "english", 0.6)):
+        st = oos_turn(s, "U1001", text, sim=sim, now=NIGHT + timedelta(minutes=10))
+        assert _ids(st) == ["FX-37"] and st["bubbles"][0]["text"] == PACK.fixed("FX-37", lang), (text, st["bubbles"])
+        assert st["llm_calls"] == [] and st["trace"]["cost_inr"] == 0, (text, st["llm_calls"])
+        assert st["trace"]["reason"] == "R-OOS-BLOCK" and st["trace"]["oos"]["decision"] == "BLOCKED", st["trace"]
+    r = s.get("U1001")
+    assert r["oos"]["strikes"] == 3 and r["counters"]["user_msgs_total"] == before, (r["oos"], r["counters"])
+    hist = " ".join(m["content"] for m in mm.history_for_prompt(r))
+    assert "Overtrade" not in hist and PACK.fixed("FX-37", "hinglish") not in hist, hist
+
+
+@test
+def oos_block_skipped_for_distress_or_grievance():
+    for text in ("sab doob gaya, bahut loss ho gaya", "mera refund kab aayega", "ye fraud hai"):
+        s = _blocked()
+        st = oos_turn(s, "U1001", text, sim=0.05, now=NIGHT + timedelta(minutes=10))
+        assert st["trace"]["reason"] != "R-OOS-BLOCK" and "FX-37" not in _ids(st), (text, st["trace"])
+        assert "understand" in _purposes(st) and st["bubbles"], (text, st)
+        assert st["trace"]["oos"]["path"] == "keyword-bypass", st["trace"]["oos"]
+
+
+@test
+def oos_block_ends_after_30_minutes_and_strikes_reset():
+    s = _blocked()
+    st = oos_turn(s, "U1001", "Overtrade se kaise bachu?", sim=0.6, now=NIGHT + timedelta(minutes=31))
+    assert st["trace"]["action"] == "ANSWER_EDUCATION" and any(b["kind"] == "ai" for b in st["bubbles"]), st["trace"]
+    assert st["trace"]["oos"]["path"] == "two-signal", st["trace"]["oos"]
+    o = s.get("U1001")["oos"]
+    assert o["strikes"] == 0 and "blocked_until" not in o, o
+    st = oos_turn(s, "U1001", "biryani ki recipe kya hai bhai", now=NIGHT + timedelta(minutes=32))
+    assert _ids(st) == ["FX-34"], st["bubbles"]                          # starts again at strike 1
+
+
+@test
+def oos_locked_skips_understand_but_real_question_still_answered():
+    s = _primed()
+    oos_turn(s, "U1001", "biryani ki recipe kya hai bhai")
+    oos_turn(s, "U1001", "cricket match kaun jeeta kal")
+    st = oos_turn(s, "U1001", "Overtrade se kaise bachu?", sim=0.6)     # locked, but close to the knowledge
+    assert "understand" in _purposes(st) and st["trace"]["action"] == "ANSWER_EDUCATION", st["trace"]
+    assert any(b["kind"] == "ai" for b in st["bubbles"]), st["bubbles"]
+    assert st["trace"]["oos"]["path"] == "locked-two-signal" and st["trace"]["oos"]["decision"] == "in-scope"
+    assert s.get("U1001")["oos"]["strikes"] == 0                         # answered → counter reset
+    oos_turn(s, "U1001", "biryani ki recipe kya hai bhai")
+    oos_turn(s, "U1001", "cricket match kaun jeeta kal")
+    st = oos_turn(s, "U1001", "ek poem likh do", sim=0.1)
+    assert "understand" not in _purposes(st) and _ids(st) == ["FX-36"], (_purposes(st), st["bubbles"])
+
+
+@test
+def oos_locked_above_floor_runs_understand_and_two_signal_rule():
+    s = _primed()
+    oos_turn(s, "U1001", "biryani ki recipe kya hai bhai")
+    oos_turn(s, "U1001", "cricket match kaun jeeta kal")
+    # between the floor (0.12) and the threshold (0.30): the classifier decides
+    st = oos_turn(s, "U1001", "Overtrade se kaise bachu?", sim=0.2)      # classifier no → normal answer
+    assert st["trace"]["action"] == "ANSWER_EDUCATION" and any(b["kind"] == "ai" for b in st["bubbles"]), st["trace"]
+    assert s.get("U1001")["oos"]["strikes"] == 0
+    oos_turn(s, "U1001", "biryani ki recipe kya hai bhai")
+    oos_turn(s, "U1001", "cricket match kaun jeeta kal")
+    st = oos_turn(s, "U1001", "ek poem likh do", sim=0.2)
+    assert _purposes(st) == ["understand"] and _ids(st) == ["FX-36"], (_purposes(st), st["bubbles"])
+    o = st["trace"]["oos"]
+    assert o["path"] == "locked-two-signal" and o["classifier"] is True and o["decision"] == "OOS", o
+    assert o["strike"] == 3 and o["blocked_until"], o
+
+
+@test
+def oos_then_in_scope_answer_resets_counter():
+    s = _primed()
+    oos_turn(s, "U1001", "biryani ki recipe kya hai bhai")
+    oos_turn(s, "U1001", "cricket match kaun jeeta kal")
+    assert s.get("U1001")["oos"]["strikes"] == 2
+    st = oos_turn(s, "U1001", "stop loss kya hota hai?", sim=0.43)
+    assert st["trace"]["action"] == "ANSWER_EDUCATION" and any(b["kind"] == "ai" for b in st["bubbles"]), st["trace"]
+    assert s.get("U1001")["oos"]["strikes"] == 0
+    st = oos_turn(s, "U1001", "biryani ki recipe kya hai bhai")         # starts again at strike 1
+    assert _ids(st) == ["FX-34"], st["bubbles"]
+
+
+@test
+def oos_classifier_yes_but_similar_to_knowledge_is_in_scope():
+    st = oos_turn(_primed(), "U1001", "biryani ki recipe kya hai bhai", sim=0.5)
+    o = st["trace"]["oos"]
+    assert o["classifier"] is True and o["similarity"] == 0.5 and o["decision"] == "in-scope", o
+    assert st["trace"]["action"] != "OUT_OF_SCOPE" and any(b["kind"] == "ai" for b in st["bubbles"]), st["trace"]
+
+
+@test
+def oos_embedding_unavailable_counts_as_in_scope():
+    st = oos_turn(_primed(), "U1001", "biryani ki recipe kya hai bhai", sim=None)
+    assert st["trace"]["oos"]["decision"] == "in-scope" and st["trace"]["action"] != "OUT_OF_SCOPE", st["trace"]
+
+
+@test
+def oos_bypass_keyword_is_never_out_of_scope():
+    from tanya.oos import bypass_hit
+    s = _primed()
+    r = s.get("U1001")
+    r["oos"] = {"strikes": 5, "last_at": timeutil.iso(NIGHT)}            # locked: would skip the classifier
+    s.save(r)
+    st = oos_turn(s, "U1001", "trial kaise start kare", sim=0.05)
+    o = st["trace"]["oos"]
+    assert o["path"] == "keyword-bypass" and o["bypass"] == "trial" and o["decision"] == "bypassed", o
+    assert "understand" in _purposes(st) and st["bubbles"], st
+    assert s.get("U1001")["oos"]["strikes"] == 0
+    # phrases and specific words bypass; generic single words do not
+    for t in ("Stop-Loss kaise lagaye", "share market band kab hota hai", "मुझे शेयर के बारे में बताओ",
+              "SEBI number?", "mera refund kab aayega", "sab doob gaya", "FD ya mutual fund"):
+        assert bypass_hit(t), t
+    for t in ("weight loss tips do", "share this song", "market se sabzi laani hai", "help me write an essay",
+              "travel plan banao", "ek app suggest karo", "fdr president tha", "पासपोर्ट कैसे बनवाएं?"):
+        assert not bypass_hit(t), (t, bypass_hit(t))
+
+
+@test
+def oos_strikes_older_than_24h_are_forgotten():
+    s = _primed()
+    oos_turn(s, "U1001", "biryani ki recipe kya hai bhai")
+    oos_turn(s, "U1001", "cricket match kaun jeeta kal")
+    st = oos_turn(s, "U1001", "ek poem likh do", now=NIGHT + timedelta(hours=25))
+    assert _ids(st) == ["FX-34"] and st["trace"]["oos"]["path"] == "two-signal", (st["bubbles"], st["trace"]["oos"])
+    assert s.get("U1001")["oos"]["strikes"] == 1
+
+
+@test
+def oos_finance_adjacent_is_not_out_of_scope():
+    st = oos_turn(_primed(), "U1001", "what is inflation", sim=0.11)
+    assert st["trace"]["oos"]["decision"] == "bypassed" and st["trace"]["action"] != "OUT_OF_SCOPE", st["trace"]
+    # even with the label on, a Row 9–19 label keeps its own row
+    lab = labels_with(education_question=True, out_of_scope=True)
+    lab["oos"] = {"on": True}
+    assert decide(lab, rec_for(), NIGHT).action == "ANSWER_EDUCATION"
+
+
+@test
+def oos_never_overrides_safety_rows():
+    for k, action in (("distress", "PAUSE_SELLING"), ("grievance", "LOG_GRIEVANCE"), ("abuse", "BOUNDARY_ABUSE"),
+                      ("wants_person", "HAND_OVER_PERSON"), ("trade_advice_seeking", "REFUSE_AND_TEACH"),
+                      ("asks_guarantee", "ANSWER_GUARANTEE"), ("small_talk", "ANSWER_SMALL_TALK")):
+        lab = labels_with(**{k: True})
+        lab["oos"] = {"on": True}
+        assert decide(lab, rec_for(), NIGHT).action == action, k
+
+
+@test
+def oos_greeting_and_small_talk_unchanged():
+    s = fresh_store()
+    st = turn(s, "U1001", "Hii")
+    assert _ids(st) == ["FX-01"] and st["llm_calls"] == [] and st["trace"]["oos"] is None, st["trace"]
+    oos_turn(s, "U1001", "biryani ki recipe kya hai bhai")
+    st = turn(s, "U1001", "thank you")
+    assert _ids(st)[0] == "FX-30" and st["llm_calls"] == [], st["bubbles"]
+    assert s.get("U1001")["oos"]["strikes"] == 1                          # gate small talk leaves strikes alone
+
+
+@test
+def oos_no_consent_in_scope_still_row_8():
+    s = _primed("U1006")
+    st = oos_turn(s, "U1006", "stop loss kya hota hai?", sim=0.43)
+    assert st["trace"]["action"] == "ANSWER_ONLY" and st["trace"]["reason"] == "R08", st["trace"]
+    assert any(b["kind"] == "ai" for b in st["bubbles"]), st["bubbles"]
+    lab = labels_with(education_question=True)
+    r = rec_for("U1006")
+    assert decide(lab, r, NIGHT).reason == "R08"
+    lab["oos"] = {"on": False}
+    assert decide(lab, r, NIGHT).reason == "R08"
+    st = oos_turn(s, "U1006", "biryani ki recipe kya hai bhai")          # off topic without consent → R-OOS
+    assert st["trace"]["reason"] == "R-OOS" and "reply" not in _purposes(st), st["trace"]
+
+
+@test
+def oos_turns_kept_but_not_in_ai_history_or_message_count():
+    s = _primed()
+    before = s.get("U1001")["counters"]["user_msgs_total"]
+    oos_turn(s, "U1001", "biryani ki recipe kya hai bhai")
+    r = s.get("U1001")
+    assert r["counters"]["user_msgs_total"] == before, r["counters"]
+    assert any(m["text"] == "biryani ki recipe kya hai bhai" for m in r["messages"])      # still logged
+    hist = " ".join(m["content"] for m in mm.history_for_prompt(r))
+    assert "biryani" not in hist and PACK.fixed("FX-34", "hinglish") not in hist, hist
+
+
+@test
+def oos_old_record_without_fields_works():
+    from tanya import oos
+    r = rec_for()
+    r.pop("oos", None)
+    o = oos.state(r, NIGHT)
+    assert o == {"strikes": 0, "last_at": None} and not oos.locked(o)
+
+
 # ---------------------------------------------------------------- optional: Redis and MySQL
 if os.environ.get("TEST_REDIS_URL"):
     @test

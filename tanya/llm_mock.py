@@ -23,6 +23,7 @@ _RULES = {
     "refers_to_past": r"(kal kya|pichli baar|last time|maine kaha tha|kal bataya)",
     "support_question": r"(\bapp\b|notification|login|access|install|password|payment fail|alert nahi|locked)",
     "education_question": r"(kya hota|kya hai\?|kaise kaam|what is|samjhao|samjha do|explain|stop[- ]?loss|option|premium|expiry|risk|position size|overtrad|ce pe|example)",
+    "out_of_scope": r"(recipe|biryani|cricket match|poem|weather|mausam|मौसम|movie|joke sunao|python|homework|essay likh)",
     "small_talk": r"(kya kar rahi|kaise ho|how are you|chai|good night|good morning|hello|^hi\b|^hey\b|what are you doing|thank)",
 }
 

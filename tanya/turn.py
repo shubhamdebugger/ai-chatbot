@@ -14,6 +14,7 @@ Every node takes the 'state' dict and returns it. graph.py wires them (LangGraph
 import re
 
 from . import memory_model as mm
+from . import oos
 from . import policy
 from .brief import lead_brief
 from .company_info import add_website_line
@@ -74,6 +75,17 @@ def n_load(st):
 
 
 # ------------------------------------------------------------------ gate
+def _hide_oos_message(st):
+    """Off-topic / block turn: kept and logged, but never in the AI's chat history, and not one of his
+    counted messages (user_msgs_total drives the value card and the Nurture temperature)."""
+    rec = st["rec"]
+    for m in rec["messages"]:
+        if m["n"] == st["msg_no"]:
+            m["meta"]["oos"] = True
+    rec["session"]["user_msgs"] -= 1
+    rec["counters"]["user_msgs_total"] -= 1
+
+
 def n_gate(st):
     rec, now = st["rec"], st["now"]
     g, line, reason = policy.gate(rec, st["store"], now, st["injection"], st.get("masked", ""))
@@ -82,10 +94,18 @@ def n_gate(st):
         last_greet = rec["journey"].get("greeted_at")
         if last_greet and (now - parse(last_greet)).total_seconds() < S.get("greeting_min_gap_hours", 3) * 3600:
             g, reason = policy.GATE_SILENT, "GREETED_RECENTLY"
+    # off-topic block (oos.py): every message gets FX-37, no AI call; complaint / distress runs the normal flow
+    if (st["kind"] == "message" and g != policy.GATE_SILENT and oos.blocked(oos.state(rec, now))
+            and not oos.urgent(st["masked"])):
+        g, line, reason = policy.GATE_FIXED, "FX-37", "R-OOS-BLOCK"
+        _hide_oos_message(st)
+        st["oos"] = {"user_id": st["user_id"], "path": "blocked", "decision": "BLOCKED",
+                     "strike": rec["oos"]["strikes"], "blocked_until": rec["oos"]["blocked_until"]}
     st["gate"], st["gate_line"], st["gate_reason"] = g, line, reason
     st["smalltalk"] = line if reason == "R-SMALLFX" else ""   # for R-SMALLFX the slot holds the category
     if g == policy.GATE_FIXED:
-        st["decision"] = Decision("FIXED_GATE", reason, fixed_line="" if st["smalltalk"] else line)
+        st["decision"] = Decision("OUT_OF_SCOPE" if reason == "R-OOS-BLOCK" else "FIXED_GATE", reason,
+                                  fixed_line="" if st["smalltalk"] else line)
         st["labels"] = defaults(st["masked"])
     return st
 
@@ -102,6 +122,21 @@ def n_understand(st):
         st["labels"]["language"] = rec["profile"].get("language", "hinglish")
         st["labels"]["failed"] = False
         return st
+    # --- out of scope (oos.py): keyword bypass first; once locked, very low similarity needs no understand call ---
+    o = oos.state(rec, now)
+    hit = oos.bypass_hit(st["masked"])
+    locked = not hit and oos.locked(o)
+    st["oos"] = {"user_id": st["user_id"], "path": "keyword-bypass" if hit else
+                 ("locked-two-signal" if locked else "two-signal"),
+                 "bypass": hit, "classifier": None, "similarity": None, "on": False}
+    if locked:
+        sim = st["oos"]["similarity"] = oos.similarity(st.get("kb"), st["masked"])
+        if sim is not None and sim < oos.floor():
+            st["labels"] = defaults(st["masked"])        # language by script / Hinglish words
+            st["labels"]["failed"] = False
+            st["labels"]["oos"] = {"on": True}
+            st["oos"].update(on=True, path="locked-similarity")
+            return st
     history = mm.history_for_prompt(rec)[:-1]
     if st.get("kb") is not None and hasattr(st["kb"], "prefetch"):
         st["kb"].prefetch(st["masked"])          # Feature 6: embedding runs during the understand call
@@ -109,6 +144,15 @@ def n_understand(st):
     _usage(st, res)
     st["labels"] = labels
     L = labels["labels"]
+    if not hit:
+        # two signals: the classifier says so AND the message is far from all approved knowledge
+        st["oos"]["classifier"] = L["out_of_scope"]["on"]
+        if L["out_of_scope"]["on"]:
+            if not locked:                            # locked: already measured above (never a second embedding)
+                st["oos"]["similarity"] = oos.similarity(st.get("kb"), st["masked"])
+            sim = st["oos"]["similarity"]
+            st["oos"]["on"] = sim is not None and sim < oos.threshold()
+    labels["oos"] = {"on": st["oos"]["on"]}
     sess = rec["session"]
     rec["profile"]["language"] = labels["language"]
     # --- session counters (this message included) ---
@@ -140,6 +184,18 @@ def n_decide(st):
         st["decision"] = Decision("GREETING", "R-GREET")
     else:
         st["decision"] = decide(st["labels"], rec, st["now"], st.get("limited", False))
+    if st.get("oos"):                            # the message reached the out-of-scope check
+        o = rec["oos"]
+        if st["decision"].action == "OUT_OF_SCOPE":
+            o["strikes"], o["last_at"] = o["strikes"] + 1, iso(st["now"])
+            if o["strikes"] >= oos.before_block():
+                oos.start_block(o, st["now"])    # FX-36 now, FX-37 for every message until it ends
+            _hide_oos_message(st)
+        else:
+            o["strikes"] = 0                     # an in-scope message answered the normal way
+        st["oos"].update(decision="OOS" if st["decision"].action == "OUT_OF_SCOPE" else
+                         ("bypassed" if st["oos"]["bypass"] else "in-scope"), strike=o["strikes"],
+                         blocked_until=o.get("blocked_until"))
     if st["decision"].action == "PAUSE_SELLING":
         rec["session"]["selling_paused"] = True
     return st
@@ -388,7 +444,8 @@ def n_after(st):
             _callback_event(st, cb, kind, promise)
     # her messages, word for word
     for b in st["bubbles"]:
-        n = mm.add_message(rec, "assistant", b["text"], now, meta={"id": b["id"], "action": d.action})
+        meta = {"id": b["id"], "action": d.action} | ({"oos": True} if d.action == "OUT_OF_SCOPE" else {})
+        n = mm.add_message(rec, "assistant", b["text"], now, meta=meta)
         _ev(st, "message", role="assistant", n=n, text=b["text"], line_id=b["id"], action=d.action)
     # temperature and brief (code only)
     temp, evidence = temperature(rec, now)
@@ -418,6 +475,7 @@ def n_after(st):
         "suppressed": mm.suppression(rec)[1], "llm_calls": st["llm_calls"], "cost_inr": cost,
         "spend_today_inr": round(today_total, 2), "spend_alert": policy.spend_alert(store, now),
         "content_version": PACK.version_string(), "notes": st.get("notes", []), "cold_start": st.get("cold_start"),
+        "oos": st.get("oos"),
     }
     _ev(st, "trace", trace=st["trace"])
     _ev(st, "state", version=rec["version"] + 1, temperature=temp, mode=rec["mode"]["state"],

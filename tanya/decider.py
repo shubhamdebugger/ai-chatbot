@@ -10,13 +10,17 @@ The AI later writes the words for that action; it never chooses the action.
 from dataclasses import dataclass, field
 
 from . import memory_model as mm
+from .oos import fixed_line as oos_line
 from .settings import S
 from .timeutil import hm
 
 # Actions whose whole reply is a fixed line (no AI writing)
 FIXED_ONLY = {"LIMIT_SPEND", "BOUNDARY_ABUSE", "HAND_OVER_PERSON", "LIMIT_EDUCATION",
               "HAND_OVER_PURCHASE", "BOOK_CALL", "ASKS_IF_AI", "BOUNDARY_FIRM", "LIMITED_MODE",
-              "ANSWER_GUARANTEE", "EARLY_TRIAL_PRICING"}
+              "ANSWER_GUARANTEE", "EARLY_TRIAL_PRICING", "OUT_OF_SCOPE"}
+# Labels with their own row 9–19: any of them on → the out-of-scope row never applies
+ROW_9_19_LABELS = ("education_question", "purchase_intent", "prefers_call", "asks_if_ai", "interest",
+                   "flirting", "support_question", "small_talk")
 # Actions that count toward the 30 education questions
 COUNTS_AS_EDUCATION = {"ANSWER_EDUCATION"}
 # Actions where emoji are not allowed (Personality Guide §3.5)
@@ -79,6 +83,11 @@ def decide(labels: dict, rec: dict, now, limited: bool = False) -> Decision:
             and not any(r != "no consent" for r in why) \
             and _prices_hidden(rec, now):
         return Decision("EARLY_TRIAL_PRICING", "R13E", fixed_line="FX-32")
+    # Row 7O — out of scope (oos.py): fixed line FX-34 / FX-35 / FX-36 (block starts); no AI words.
+    # Before Row 8 so it applies with or without consent; any Row 9–19 label keeps its own row.
+    if labels.get("oos", {}).get("on") and not any(_on(labels, k) for k in ROW_9_19_LABELS):
+        n = rec.get("oos", {}).get("strikes", 0) + 1
+        return Decision("OUT_OF_SCOPE", "R-OOS", fixed_line=oos_line(n), notes=[f"oos strike {n}"])
     # Row 8 — no consent: answer only
     if not consent:
         d = Decision("ANSWER_ONLY", "R08", tier=tier)
