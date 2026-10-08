@@ -29,7 +29,7 @@ _TRADING = re.compile(
     r"|strike|target|stop ?loss|market|ipo|crypto|futures?|level kya)\b",
     re.I)
 
-_SKIP_ACTIONS = {"REFUSE_AND_TEACH", "PAUSE_SELLING", "BOUNDARY_ABUSE"}
+_SKIP_ACTIONS = {"REFUSE_AND_TEACH", "PAUSE_SELLING", "BOUNDARY_ABUSE", "END_CHAT_ABUSE"}
 
 
 def is_company_query(text: str) -> bool:

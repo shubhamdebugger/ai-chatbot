@@ -4,8 +4,9 @@ Plain English: before Tanya thinks about a message, these rules decide
 whether she may answer at all, and in what mode:
 - HUMAN mode: a staff member is handling the chat → Tanya stays silent.
 - Kill switch: 'stopped' → silent; 'limited' → general and education answers only.
+- Chat ended for abuse (3rd strike, FX-35): silent until a new session starts.
 - Guarantee question: fixed line FX-20, no AI call.
-- Founder question: fixed line FX-33, no AI call (plan/offer questions keep the pricing flow).
+- Founder question: fixed line FX-37, no AI call (plan/offer questions keep the pricing flow).
 - Small talk: the whole message is a greeting / how are you / bye / thanks / sorry
   → a fixed line only, no AI call (R-SMALLFX).
 - Spend ceiling: at 100% of the day's AI budget → fixed line FX-05.
@@ -25,7 +26,7 @@ MONEY_RX = re.compile(r"paisa|paise|money|return|profit|double|dugna", re.I)
 GRIEVANCE_RX = re.compile(r"fraud|refund|cheat|dhokha|complaint", re.I)
 FOUNDER_RX = re.compile(r"founder|founded|\bowner\b|\bowns\b|malik|\bceo\b|kisne banaya|kisne banayi|kisne shuru|"
                         r"who started|who runs|who made|tushar|ghone|sansthapak|संस्थापक|मालिक|तुषार", re.I)
-# a founder word next to a plan / offer word is a pricing question (FX-32 promises the founder's offer)
+# a founder word next to a plan / offer word is a pricing question (FX-36 promises the founder's offer)
 OFFER_RX = re.compile(r"offer|plan|pric|kitne|kitna|fees|cost|discount|subscription|₹", re.I)
 
 # ---- zero-AI small talk (R-SMALLFX): the WHOLE message must be one plain category
@@ -107,12 +108,14 @@ def gate(rec, store, now, injection_flag: bool, text: str = ""):
         human_takeover(rec, now, by="webhook flag")
     if mode_is_human(rec, now) or store.human_flag(rec["conversation_id"], now):
         return GATE_SILENT, None, "HUMAN_MODE"
+    if rec["session"].get("ended"):
+        return GATE_SILENT, None, "CHAT_ENDED"
     if injection_flag:
         return GATE_FIXED, "FX-12", "R00"
     if GUARANTEE_RX.search(text) and MONEY_RX.search(text) and not GRIEVANCE_RX.search(text):
         return GATE_FIXED, "FX-20", "R07G"
     if FOUNDER_RX.search(text) and not OFFER_RX.search(text) and not GRIEVANCE_RX.search(text):
-        return GATE_FIXED, "FX-33", "R07F"
+        return GATE_FIXED, "FX-37", "R07F"
     cat = smalltalk_category(text)
     if cat:
         # the whole message is small talk → compose picks the FX-xx line for this category

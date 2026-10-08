@@ -41,16 +41,29 @@ def settings(now=None) -> dict:
         return _cache["value"]
     value = _cache["value"] or {"everyone": False, "phones": set()}
     try:
-        conn = _connect()
-        try:
-            with conn.cursor() as c:
-                c.execute("SELECT value FROM app_settings WHERE name = 'tanya_ai_enabled_all'")
-                row = c.fetchone()
-                c.execute("SELECT phone FROM tanya_ai_phones")
-                phones = {ten(r[0]) for r in c.fetchall()} - {""}
-            value = {"everyone": bool(row) and str(row[0]) == "1", "phones": phones}
-        finally:
-            conn.close()
+        url = S.env("ACCESS_URL", "")
+        if url:
+            # The dashboard's AI tab writes the list on the PWA box, whose database is closed to the outside;
+            # that box serves it here (GET, x-tanya-key = TANYA_API_KEY). Same rules: any failure raises and
+            # we keep the last good value, never "everyone".
+            import httpx
+            r = httpx.get(url, headers={"x-tanya-key": S.env("TANYA_API_KEY", "")}, timeout=3)
+            r.raise_for_status()
+            j = r.json()
+            if not j.get("ok"):
+                raise RuntimeError("access endpoint not ok")
+            value = {"everyone": j.get("everyone") is True, "phones": {ten(p) for p in j.get("phones") or []} - {""}}
+        else:
+            conn = _connect()
+            try:
+                with conn.cursor() as c:
+                    c.execute("SELECT value FROM app_settings WHERE name = 'tanya_ai_enabled_all'")
+                    row = c.fetchone()
+                    c.execute("SELECT phone FROM tanya_ai_phones")
+                    phones = {ten(r[0]) for r in c.fetchall()} - {""}
+                value = {"everyone": bool(row) and str(row[0]) == "1", "phones": phones}
+            finally:
+                conn.close()
     except Exception as e:
         print(f"[access] settings read failed {type(e).__name__}: {str(e)[:120]} - keeping last value",
               file=sys.stderr, flush=True)
