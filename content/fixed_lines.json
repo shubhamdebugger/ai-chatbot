@@ -86,9 +86,9 @@
   },
   "FX-15": {
     "moment": "Abuse - calm line",
-    "english": "I understand you're upset. I want to help — tell me what the problem is, or shall I connect you with our team?",
-    "hinglish": "Main samajh sakti hoon aap pareshan hain. Main madad karna chahti hoon — bataiye kya problem hai, ya main team se baat karwa doon?",
-    "hindi": "मैं समझ सकती हूँ आप परेशान हैं। मैं मदद करना चाहती हूँ — बताइए क्या समस्या है, या मैं टीम से बात करवा दूँ?"
+    "english": "I understand you're upset. I want to help — tell me what the problem is ?",
+    "hinglish": "Main samajh sakti hoon aap pareshan hain. Main madad karna chahti hoon — bataiye kya problem hai ?",
+    "hindi": "मैं समझ सकती हूँ आप परेशान हैं। मैं मदद करना चाहती हूँ — बताइए क्या समस्या है ?"
   },
   "FX-16": {
     "moment": "Repeated flirting - firm line",

@@ -1992,6 +1992,56 @@ def company_info_appends_url_and_handles_guardrail_block():
 
 
 @test
+def company_website_line_only_for_company_queries():
+    from tanya.company_info import WEBSITE_LINE, add_website_line
+
+    def gets_line(text, action):
+        b = [{"id": "AI", "kind": "ai", "text": "reply"}]
+        add_website_line(b, text, action)
+        return WEBSITE_LINE in b[0]["text"]
+
+    # company / address / office / contact / registration on an answer turn -> line
+    for t, a in (("company ke bare me batao", "ANSWER"), ("aapka office address kya hai", "ANSWER"),
+                 ("where is your office located", "ANSWER_ONLY"), ("contact number kya hai", "ANSWER_SUPPORT"),
+                 ("SEBI registration number kya hai", "ANSWER"), ("registered office address", "ANSWER")):
+        assert gets_line(t, a), (t, a)
+    # grievance, trading, small talk, greeting and other non-answer turns -> never
+    for t, a in (("mujhe complaint karni hai, contact kaise karu", "LOG_GRIEVANCE"),
+                 ("office address kya hai", "LOG_GRIEVANCE"),
+                 ("customer care contact nahi ho raha, refund chahiye", "ANSWER_SUPPORT"),
+                 ("grievance kaise file karu company me", "ANSWER"),
+                 ("kaun si company me invest karu", "ANSWER"), ("reliance company ka share kharidu?", "REFUSE_AND_TEACH"),
+                 ("Nifty kal upar jayega?", "ANSWER"), ("main office se ghar aa gaya", "ANSWER_SMALL_TALK"),
+                 ("good morning", "GREETING"), ("office kahan hai", "HAND_OVER_PERSON")):
+        assert not gets_line(t, a), (t, a)
+    # information intent (target + asking form) yes; a mention / opinion / complaint of the company no
+    for t in ("company ka address kya hai", "company ka pata batao", "office kidhar hai", "aapka office location kya hai",
+              "company kaha located hai", "company ke contact details chahiye", "company ke baare mein batao",
+              "tell me about your company", "company ki details share karo", "where is your office",
+              "कंपनी का पता क्या है", "आपका ऑफिस कहाँ है", "office address"):
+        assert gets_line(t, "ANSWER"), t
+    for t in ("gandu company hai", "jat... ek number ki gandu company hai", "gandi company hai",
+              "company bahut bekar hai", "main company se naraz hoon", "company ne mera paisa le liya",
+              "I hate your company", "your company is bad", "your customer care is useless",
+              "company share price kya hai", "main office se ghar aa gaya", "कंपनी बेकार है"):
+        assert not gets_line(t, "ANSWER"), t
+    # the understand call saw a grievance / abuse / an upset mood -> no line, whatever the words
+    b = [{"id": "AI", "kind": "ai", "text": "reply"}]
+    for lab in ({"labels": {"grievance": {"on": True}}}, {"labels": {"abuse": {"on": True}}}, {"mood": "upset"}):
+        assert not add_website_line(b, "office address kya hai", "ANSWER", lab), lab
+    assert add_website_line(b, "office address kya hai", "ANSWER", {"labels": {}, "mood": "neutral"})
+
+    # full turns (mock AI): only the company question carries the line
+    s = fresh_store()
+    texts = {t: "\n".join(b["text"] for b in turn(s, "U1001", t)["bubbles"])
+             for t in ("Aapka office address kya hai?", "Mujhe complaint karni hai, refund chahiye",
+                       "Kal Nifty upar jayega kya?", "Hi kaise ho")}
+    assert WEBSITE_LINE in texts["Aapka office address kya hai?"], texts
+    for t in list(texts)[1:]:
+        assert WEBSITE_LINE not in texts[t], (t, texts[t])
+
+
+@test
 def kb_has_only_the_approved_addresses():
     texts = {c["chunk_id"]: c["text"] for c in KB.chunks}
     assert not any("Rupa Solitaire" in t or "Flat No. 502" in t for t in texts.values())

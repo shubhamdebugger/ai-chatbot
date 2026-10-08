@@ -351,7 +351,7 @@ def n_guard(st):
         rec["session"]["disclaimer_shown"] = bool(S.get("disclaimer_once_per_session", True))
     # company / address / contact question → official website as the last line, after every check (also after FX-12)
     if st["kind"] == "message":
-        add_website_line(st["bubbles"], st.get("masked") or st.get("text", ""), d.action)
+        add_website_line(st["bubbles"], st.get("masked") or st.get("text", ""), d.action, st.get("labels"))
     return st
 
 
