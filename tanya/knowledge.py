@@ -21,6 +21,8 @@ import hashlib
 import json
 import math
 import re
+import threading
+import time
 import uuid
 from collections import Counter
 
@@ -172,16 +174,62 @@ class KnowledgeIndex:
                     raise ValueError(f"collection has {have}-dim vectors, embeddings are {size}-dim "
                                      f"(use another QDRANT_COLLECTION per embedding model)")
             ids = [self._point_id(c) for c in self.chunks]
+            if self._qdrant_current(col, ids):
+                self.qdrant = True                  # already complete: no write → no WAL activity on every start
+                return
             points = [{"id": pid, "vector": c["vec"],
                        "payload": {k: c[k] for k in ("chunk_id", "doc_id", "title", "category", "status", "version")}
                        | {"key": self._key(c)}}
                       for pid, c in zip(ids, self.chunks)]
             httpx.put(f"{col}/points?wait=true", json={"points": points}, timeout=30).raise_for_status()
-            httpx.post(f"{col}/points/delete?wait=true", json={"filter": {"must_not": [{"has_id": ids}]}},
-                       timeout=30).raise_for_status()
+            # Remove chunks that no longer exist BY EXPLICIT ID. Never delete with a filter `must_not has_id`:
+            # Qdrant 1.17.0 writes that operation to its WAL in a form it cannot read back, so the next start
+            # panics ("Can't deserialize entry, probably corrupted WAL", Utf8Error) and crash-loops — the root
+            # cause of the tanya-qdrant restart loop (reproduced: scripts/qdrant_wal_repro.sh, case B).
+            r = httpx.post(f"{col}/points/scroll", json={"limit": 10_000, "with_payload": False,
+                                                       "with_vector": False}, timeout=30)
+            r.raise_for_status()
+            keep = set(ids)
+            stale = [p["id"] for p in r.json()["result"]["points"] if p["id"] not in keep]
+            if stale:
+                httpx.post(f"{col}/points/delete?wait=true", json={"points": stale}, timeout=30).raise_for_status()
             self.qdrant = True
         except Exception as e:  # Qdrant down or misconfigured: in-memory vectors still work
             self.qdrant_error = f"{type(e).__name__}: {str(e)[:200]}"
+
+    def _qdrant_current(self, col, ids):
+        """True when the collection holds exactly these chunks with these vectors (same content keys). Every Tanya
+        process used to re-write all points at start-up — 13 concurrent writers per restart, and an unclean stop
+        during those writes is what tore Qdrant's WAL. Now Qdrant is only written when something changed."""
+        try:
+            r = httpx.post(f"{col}/points/scroll", json={"limit": len(ids) + 1, "with_payload": ["key"],
+                                                       "with_vector": False}, timeout=5)
+            r.raise_for_status()
+            have = {p["id"]: (p.get("payload") or {}).get("key") for p in r.json()["result"]["points"]}
+            want = {pid: self._key(c) for pid, c in zip(ids, self.chunks)}
+            return have == want
+        except Exception:
+            return False
+
+    def _qdrant_heal(self):
+        """Qdrant restarted empty, lost the collection (self-heal after a corrupted WAL) or was down at start-up:
+        rebuild it from the in-memory vectors in the background, at most every 30 s. The customer never waits for
+        this — search uses the in-memory vectors until Qdrant is complete again."""
+        if S.env("KNOWLEDGE_BACKEND", "").lower() != "qdrant" or not self.has_vectors:
+            return
+        lock = self.__dict__.setdefault("_q_lock", threading.Lock())
+        if time.time() - self.__dict__.get("_q_heal_at", 0) < 30 or not lock.acquire(blocking=False):
+            return
+        self._q_heal_at = time.time()
+
+        def run():
+            try:
+                self._qdrant_sync()
+                print(f"[knowledge] qdrant re-sync {'ok' if self.qdrant else 'failed: ' + self.qdrant_error}",
+                      flush=True)
+            finally:
+                lock.release()
+        threading.Thread(target=run, daemon=True, name="qdrant-heal").start()
 
     @staticmethod
     def _point_id(c):
@@ -211,8 +259,50 @@ class KnowledgeIndex:
         return dot / (na * nb) if na and nb else 0.0
 
     # ---------------- the search
-    def search(self, query: str, top_k=None, categories=None):
-        """Hybrid search. Returns the best chunks with scores (0..1)."""
+    def _query_vector(self, query):
+        """The customer is waiting: the query embedding gets a short budget (Spec 3.1 F6, default 1.5 s) and is
+        cached per worker. Too slow or failed → None → keyword search only (still answers, never hangs).
+        If prefetch() already started this embedding, wait for that one instead of asking again."""
+        cache = self.__dict__.setdefault("_qcache", {})
+        key = " ".join(query.lower().split())
+        if key in cache:
+            return cache[key]
+        budget = float(S.env("EMBEDDING_TIMEOUT_SECONDS", "1.5"))
+        fut = self.__dict__.setdefault("_qpending", {}).pop(key, None)
+        if fut is not None:
+            try:
+                qv = fut.result(timeout=budget)
+            except Exception:
+                qv = None
+        else:
+            qv = embed([query], timeout=budget)
+        if qv:
+            if len(cache) > 2000:
+                cache.clear()
+            cache[key] = qv
+        return qv
+
+    def prefetch(self, query):
+        """Start the query embedding in the background (06-Oct-2026, Feature 6): the turn calls this before the
+        understand call, so the embedding (0.3-1.5 s) runs during that call instead of after it."""
+        if not self.has_vectors or not (query or "").strip():
+            return
+        key = " ".join(query.lower().split())
+        pending = self.__dict__.setdefault("_qpending", {})
+        if key in self.__dict__.get("_qcache", {}) or key in pending:
+            return
+        if len(pending) > 50:
+            pending.clear()
+        if "_qpool" not in self.__dict__:
+            from concurrent.futures import ThreadPoolExecutor
+            self._qpool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="kb-prefetch")
+        budget = float(S.env("EMBEDDING_TIMEOUT_SECONDS", "1.5"))
+        pending[key] = self._qpool.submit(embed, [query], timeout=budget)
+
+    def search(self, query: str, top_k=None, categories=None, vec_query=None):
+        """Hybrid search. Returns the best chunks with scores (0..1).
+        vec_query: text for the meaning (vector) part when it differs from the keyword query — the turn passes the
+        customer's message itself, whose embedding was prefetched during the understand call."""
         top_k = top_k or S.get("knowledge_top_k", 3)
         q = tokens(query)
         cands = [c for c in self.chunks if not categories or c["category"] in categories]
@@ -222,9 +312,15 @@ class KnowledgeIndex:
         mx = max(kw) or 1.0
         scores = [k / mx for k in kw]
         if self.has_vectors:
-            qv = embed([query])
+            qv = self._query_vector(vec_query or query)
             if qv:
                 qs = self._qdrant_scores(qv[0], categories) if self.qdrant else None
+                if not qs:                 # error, or an empty/missing collection: rebuild it, use memory now
+                    if self.qdrant and qs is not None:
+                        self.qdrant_error = "collection returned no points (empty after a Qdrant restart?)"
+                    self.qdrant = False
+                    self._qdrant_heal()
+                    qs = None
                 cos = [qs.get(c["chunk_id"], 0.0) for c in cands] if qs is not None \
                     else [self._cos(qv[0], c["vec"]) for c in cands]
                 scores = [0.5 * s + 0.5 * max(0.0, v) for s, v in zip(scores, cos)]

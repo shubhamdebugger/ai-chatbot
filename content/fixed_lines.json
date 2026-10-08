@@ -2,9 +2,9 @@
   "_read_me": "Fixed lines FX-01..FX-18. The AI never writes these. {name}, {case_no}, {when}, {slot_1}, {slot_2}, {plan_line}, {limit}, {sebi_reg_no} are filled by code. Status: DRAFT - for Tushar and compliance approval (input D2).",
   "FX-01": {
     "moment": "AI disclosure - first message ever",
-    "english": "Hi {name}, I'm Tanya — TG Level's AI assistant. I'll guide you through your trial step by step and answer your questions. Whenever you want a person from our team, just say so.",
-    "hinglish": "Namaste {name}, main Tanya hoon — TG Level ki AI assistant. Aapke trial mein step by step guide karungi. Kabhi bhi team se baat karni ho, bas bol dijiye.",
-    "hindi": "नमस्ते {name}, मैं तान्या हूँ — TG Level की AI असिस्टेंट। आपके ट्रायल में स्टेप बाय स्टेप गाइड करूँगी। कभी भी टीम से बात करनी हो, बस बोल दीजिए।"
+    "english": "Hi {name}, I'm Tanya — TG Level's(Demo AI Guide). I'll guide you through your trial step by step and answer your questions. Whenever you want a person from our team, just say so.",
+    "hinglish": "Namaste {name}, main Tanya hoon — TG Level ki (Demo AI Guide). Aapke trial mein step by step guide karungi. Kabhi bhi team se baat karni ho, bas bol dijiye.",
+    "hindi": "नमस्ते {name}, मैं तान्या हूँ — TG Level की Demo AI Guide आपके ट्रायल में स्टेप बाय स्टेप गाइड करूँगी। कभी भी टीम से बात करनी हो, बस बोल दीजिए।"
   },
   "FX-02": {
     "moment": "Chat-first line, once after the first useful answer",
@@ -119,6 +119,13 @@
     "english": "Nahi, paise double hone ki guarantee koi SEBI-registered research provider nahi de sakta. Markets uncertain hote hain, aur ‘sure-shot’ ya ‘100%’ ka wada warning sign hai.",
     "hinglish": "Nahi, paise double hone ki guarantee koi SEBI-registered research provider nahi de sakta. Markets uncertain hote hain, aur ‘sure-shot’ ya ‘100%’ ka wada warning sign hai.",
     "hindi": "Nahi, paise double hone ki guarantee koi SEBI-registered research provider nahi de sakta. Markets uncertain hote hain, aur ‘sure-shot’ ya ‘100%’ ka wada warning sign hai."
+  },
+  "FX-33": {
+    "moment": "Founder question - who founded / owns / runs TG Levels (R07F)",
+    "status": "DRAFT",
+    "english": "Tushar Ghone is the Founder and Chief Mentor of TG Levels, and also serves as its CEO and Principal Officer. He is NISM-certified, SEBI-registered, and holds a B.E. from VJTI Mumbai along with a Post Graduate Diploma in Finance.",
+    "hinglish": "Tushar Ghone, TG Levels ke Founder aur Chief Mentor hain, aur saath hi company ke CEO aur Principal Officer bhi hain. Woh NISM-certified aur SEBI-registered hain, aur unhone VJTI Mumbai se B.E. aur Finance mein Post Graduate Diploma kiya hai.",
+    "hindi": "Founder Details Printed"
   },
   "FX-32": {
     "moment": "Plans/pricing question on trial Day 1-2 - prices held back until Day 3 (R13E)",
@@ -241,5 +248,17 @@
         "hindi": "कोई दिक्कत नहीं जी 😊 आगे बताइए।"
       }
     }
+  },
+  "FX-32": {
+    "purpose": "Handoff recovery, business hours: no agent replied within 10 minutes (Tushar 06-Oct-2026)",
+    "english": "Sorry for the delay. While our team is unavailable, I can continue assisting you.",
+    "hinglish": "Deri ke liye maaf kijiye. Jab tak hamari team available nahi hai, main aapki madad karti rahungi.",
+    "hindi": "देरी के लिए माफ़ कीजिए। जब तक हमारी टीम उपलब्ध नहीं है, मैं आपकी मदद करती रहूँगी।"
+  },
+  "FX-33": {
+    "purpose": "Handoff recovery, night: no agent replied within 12 hours (Tushar 06-Oct-2026)",
+    "english": "Our team is currently unavailable. I'll continue assisting you until an agent becomes available.",
+    "hinglish": "Hamari team abhi available nahi hai. Jab tak koi team member available nahi hota, main aapki madad karti rahungi.",
+    "hindi": "हमारी टीम अभी उपलब्ध नहीं है। जब तक कोई टीम सदस्य उपलब्ध नहीं होता, मैं आपकी मदद करती रहूँगी।"
   }
 }

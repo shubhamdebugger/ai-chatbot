@@ -19,6 +19,8 @@ Plain English:
 """
 import hmac
 import json
+import os
+import sys
 import time
 from pathlib import Path
 from typing import Literal
@@ -28,6 +30,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
+from . import access
 from . import memory_model as mm
 from .brief import agent_card
 from .content_pack import PACK
@@ -43,6 +46,7 @@ from . import voice_live
 from .workers import TurnHandler, close_idle_sessions, seed_dev, seed_server_factory
 
 app = FastAPI(title="Ms Tanya — AI Gateway (Python reference)", version="1.0-frame")
+os.environ.setdefault("REDIS_CONNECT_TIMEOUT_SECONDS", "2")   # gateway: fail fast, never hold the CRM
 store = make_store()
 llm = LLM()
 kb = KnowledgeIndex()
@@ -64,11 +68,52 @@ def health():
         lg = S.env("USE_LANGGRAPH", "1") != "0"
     except Exception:
         lg = False
+    try:
+        ks = store.killswitch()
+    except Exception:
+        ks = "off"
     return {"ok": True, "run_mode": S.run_mode, "provider": S.provider, "fallback": S.fallback_provider or None,
             "langgraph": lg, "knowledge_chunks": len(kb.chunks), "vectors": kb.has_vectors,
-            "vector_store": "qdrant" if kb.qdrant else ("memory" if kb.has_vectors else "none"),
-            "qdrant_error": kb.qdrant_error or None,
-            "content_version": PACK.version_string(), "killswitch": store.killswitch()}
+            "vector_store": "qdrant" if getattr(kb, "qdrant", None) else ("memory" if kb.has_vectors else "none"),
+            "qdrant_error": getattr(kb, "qdrant_error", None),
+            "content_version": PACK.version_string(), "killswitch": ks}
+
+
+
+@app.get("/health/queues")
+def health_queues():
+    """Monitoring: is any message waiting, stuck or lost? (alarm on dead > 0, oldest_pending_s > 60,
+    reconcile_age_s > 60, p95_total_ms over target)."""
+    if not SERVER:
+        return {"ok": True, "run_mode": "dev"}
+    from .streams import GROUP, stream_name
+    r, now_ms = store.r, int(time.time() * 1000)
+    lanes, worst = [], 0
+    for p in range(S.get("stream_partitions", 8)):
+        s = stream_name(p)
+        try:
+            g = next((x for x in r.xinfo_groups(s) if x["name"] == GROUP), {})
+        except Exception:
+            g = {}
+        oldest = 0
+        if g.get("pending"):
+            first = r.xpending_range(s, GROUP, min="-", max="+", count=1)
+            if first:
+                oldest = int(first[0]["time_since_delivered"] / 1000)
+        worst = max(worst, oldest)
+        lanes.append({"lane": s, "pending": g.get("pending", 0), "lag": g.get("lag"), "oldest_pending_s": oldest,
+                      "consumers": g.get("consumers", 0)})
+    turns = [json.loads(x) for x in r.lrange("tanya:metrics:turns", 0, 99)]
+    tot = sorted(t["total_ms"] for t in turns if t.get("total_ms") is not None)
+    pct = lambda q: tot[min(len(tot) - 1, int(len(tot) * q))] if tot else None
+    last = lambda k: (int(time.time()) - int(r.get(k))) if r.get(k) else None
+    out = {"ok": True, "lanes": lanes, "oldest_pending_s": worst, "dead_letters": r.xlen("tanya:dead"),
+           "errors_total": r.xlen("tanya:errors"), "reconciled_total": int(r.get("tanya:metrics:reconciled") or 0),
+           "reconcile_age_s": last("tanya:metrics:reconcile_last"), "webhook_age_s": last("tanya:metrics:webhook_last"),
+           "turns_measured": len(tot), "p50_total_ms": pct(0.5), "p95_total_ms": pct(0.95)}
+    out["alarms"] = [a for a, bad in (("dead_letters", out["dead_letters"] > 0), ("stuck_pending", worst > 60),
+                                       ("reconciler_not_running", (out["reconcile_age_s"] or 999) > 60)) if bad]
+    return out
 
 
 # ------------------------------------------------------------------ voice agent knowledge tool
@@ -214,26 +259,138 @@ def voice_tool_report_abuse(body: ToolCall, x_tool_secret: str = Header("")):
 # ------------------------------------------------------------------ CRM webhook
 @app.post("/webhook/crm")
 async def webhook(request: Request):
+    """The CRM's PHP request (the customer's 'Sending...') waits for this answer, so it must be fast and must
+    never block other webhooks: the Redis work runs in the thread pool, not on the event loop."""
+    t0 = time.perf_counter()
     payload = await request.json()
-    ev = adapter.parse_webhook(payload, {k.lower(): v for k, v in request.headers.items()})
+    headers = {k.lower(): v for k, v in request.headers.items()}
+    try:
+        status, body, ev = await run_in_threadpool(_webhook, payload, headers)
+    except Exception as e:                                           # Redis down etc.: say so (503); the
+        status, body, ev = 503, {"ok": False, "error": type(e).__name__}, None   # reconciler recovers the message
+    print(f"[webhook] kind={getattr(ev, 'kind', '-')} event={getattr(ev, 'event_id', '-')} status={status} "
+          f"result={json.dumps(body)} ms={int((time.perf_counter() - t0) * 1000)}", file=sys.stderr, flush=True)
+    return JSONResponse(body, status_code=status)
+
+
+def _webhook(payload, headers):
+    ev = adapter.parse_webhook(payload, headers)
     if ev is None:
-        return JSONResponse({"ok": False, "ignored": True}, status_code=200)
+        return 200, {"ok": False, "ignored": True}, None
+    if ev.kind == "invalid_event":                                   # G5: no numeric message id — never guessed
+        store.emit([{"type": "alert", "user_id": ev.user_id or "-", "at": timeutil.iso(timeutil.now()),
+                     "kind": "webhook_without_message_id", "conversation_id": ev.conversation_id}])
+        return 200, {"ok": False, "rejected": "missing message_id"}, ev
+    if ev.kind in ("conversation_closed", "release_to_bot"):         # HUMAN -> BOT (v4 §7): chat closed / #bot
+        from .handoff_recovery import released_by_staff
+        released_by_staff(store, ev.conversation_id, timeutil.now(), ev.kind)
+        store.release_conversation(ev.conversation_id, timeutil.now())
+        if ev.kind == "conversation_closed":                         # final summary of the closed chat
+            store.summary_touch(ev.conversation_id, ev.user_id, time.time(), force=True)
+        store.emit([{"type": "mode", "user_id": ev.user_id or ev.conversation_id, "at": timeutil.iso(timeutil.now()),
+                     "conversation_id": ev.conversation_id, "mode": "BOT", "by": ev.kind}])
+        return 200, {"ok": True, "released": ev.conversation_id}, ev
     if ev.kind == "staff_message":                                   # HUMAN at once (v4 step 6)
         store.set_human_flag(ev.conversation_id, S.get("human_mode_release_hours", 12), timeutil.now())
+        store.staff_wait_end(ev.conversation_id)                     # staff answered: no staff-silent alert
+        from .handoff_recovery import agent_replied
+        sender = str((payload.get("data") or {}).get("user_id", ""))
+        agent_replied(store, ev.conversation_id, timeutil.now(), agent_id=sender)   # keeps HUMAN, cancels recovery
+        from .handoff_recovery import agent_activity                 # Tanya back after N quiet agent minutes
+        agent_activity(store, ev.conversation_id, ev.user_id, ev.event_id, timeutil.now())
+        store.summary_touch(ev.conversation_id, ev.user_id, time.time())
     if ev.kind not in ("user_message", "staff_message"):
-        return {"ok": True, "skipped": ev.kind}
+        return 200, {"ok": True, "skipped": ev.kind}, ev
     event = {"event_id": ev.event_id, "kind": ev.kind, "user_id": ev.user_id,
-             "conversation_id": ev.conversation_id, "text": ev.text}
+             "conversation_id": ev.conversation_id, "text": ev.text,
+             "received_ms": int(time.time() * 1000), "source": "webhook"}
     if SERVER:
-        return {"ok": True, "queued": intake.enqueue(event)}
+        queued = intake.enqueue(event)                              # Redis down -> raises -> 503 at once
+        if queued and ev.kind == "user_message" and not store.human_flag(ev.conversation_id, timeutil.now()):
+            store.typing_set(ev.conversation_id, "queued", S.get("typing_ttl_seconds", 90))   # PWA typing truth
+        store.r.set("tanya:metrics:webhook_last", int(time.time()))   # monitoring, only after a good enqueue
+        return 200, {"ok": True, "queued": queued}, ev
     dev_handler.adapter = adapter
     dev_handler(event)                                               # dev: process inline
-    return {"ok": True}
+    return 200, {"ok": True}, ev
+
+
+# ------------------------------------------------------------------ PWA status + CRM callbacks API (06-Oct-2026)
+def _key_ok(request: Request) -> bool:
+    """Server-to-server calls only (PWA backend, CRM page). Key = TANYA_API_KEY, else the CRM webhook secret."""
+    import hmac as _h
+    want = S.env("TANYA_API_KEY", "") or S.env("CRM_WEBHOOK_SECRET", "")
+    got = request.headers.get("x-tanya-key", "")
+    return bool(want) and _h.compare_digest(str(got), str(want))
+
+
+@app.get("/pwa/status/{conversation_id}")
+def pwa_status(conversation_id: str, request: Request):
+    """What the customer's chat should show: Tanya working (typing), or waiting for staff (HUMAN)."""
+    if not _key_ok(request):
+        return JSONResponse({"ok": False}, status_code=403)
+    now = timeutil.now()
+    h = store.handoff_get(conversation_id)
+    return {"ok": True, "typing": store.typing_get(conversation_id),
+            "last_reply_id": store.last_reply_get(conversation_id),
+            "last_received_id": int(store.r.get(f"tanya:lastin:{conversation_id}") or 0) if hasattr(store, "r") else 0,
+            # not on the dashboard's AI list: the team answers this chat, so the PWA shows "team will reply"
+            "mode": "HUMAN" if store.human_flag(conversation_id, now) or access.is_off(store, conversation_id) else "BOT",
+            "handoff": {k: h.get(k) for k in ("status", "period", "started_at", "due_at")} if h else None}
+
+
+def _cb_conn():
+    from .callbacks import connect
+    return connect()
+
+
+@app.get("/crm/callbacks")
+def crm_callbacks(request: Request, view: str = "open", days: int = 7):
+    if not _key_ok(request):
+        return JSONResponse({"ok": False}, status_code=403)
+    from .callbacks import list_callbacks
+    conn = _cb_conn()
+    try:
+        return {"ok": True, **list_callbacks(conn, view, max(1, min(days, 90)))}
+    finally:
+        conn.close()
+
+
+@app.post("/crm/callbacks/{callback_id}/done")
+async def crm_callback_done(callback_id: str, request: Request):
+    if not _key_ok(request):
+        return JSONResponse({"ok": False}, status_code=403)
+    body = await request.json()
+    from .callbacks import mark_done
+    conn = _cb_conn()
+    try:
+        ok = await run_in_threadpool(mark_done, conn, callback_id, str(body.get("actor") or "crm"), str(body.get("note") or ""))
+        return {"ok": ok}
+    finally:
+        conn.close()
+
+
+@app.get("/crm/callbacks/{callback_id}/audit")
+def crm_callback_audit(callback_id: str, request: Request):
+    if not _key_ok(request):
+        return JSONResponse({"ok": False}, status_code=403)
+    from .callbacks import audit_for
+    conn = _cb_conn()
+    try:
+        return {"ok": True, "audit": audit_for(conn, callback_id)}
+    finally:
+        conn.close()
 
 
 @app.post("/events/app")
-async def app_event(request: Request):
-    """TODO (app developer, B2): sign these calls; add plan_bought, consent_changed, journey events."""
+async def app_event(request: Request, x_app_secret: str = Header("")):
+    """App events from TG Lite's backend (never the browser), with the shared APP_EVENTS_SECRET.
+    Empty secret = endpoint off. TODO (app developer, B2): add plan_bought, consent_changed, journey events."""
+    secret = S.env("APP_EVENTS_SECRET")
+    if not secret:
+        raise HTTPException(404)
+    if not hmac.compare_digest(x_app_secret, secret):
+        raise HTTPException(401, "invalid app secret")
     body = await request.json()
     if body.get("event") != "app_open":
         return {"ok": True, "skipped": body.get("event")}

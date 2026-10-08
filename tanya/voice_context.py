@@ -247,9 +247,10 @@ def internal_notes(store, adapter, ctx, now) -> dict:
     """What staff know: agent notes, open cases, callbacks, signals, temperature. Never read out."""
     out = {"agent_notes": [], "cases": [], "callbacks": [], "senior_callbacks": open_callbacks(ctx),
            "signals": {}, "temperature": None}
-    if ctx.get("sb_user_id"):
+    if ctx.get("sb_conversation_id"):
         try:
-            for n in adapter.read_notes(ctx["sb_user_id"]) or []:
+            # Support Board keeps notes per conversation (get-notes / notes_list takes conversation_id)
+            for n in adapter.read_notes(ctx["sb_conversation_id"]) or []:
                 n = n if isinstance(n, dict) else {"message": str(n)}
                 if str(n.get("name", "")).startswith("Ms Tanya"):
                     continue                             # her own brief and call notes: already in the brief

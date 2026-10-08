@@ -6,14 +6,28 @@ the gate: go on to understand, jump to compose for a fixed line, or stop (silent
 Code decides every branch — the AI never picks the path. USE_LANGGRAPH=0 in .env
 forces the plain loop; both give the same result (tests check this).
 """
+import time
 from typing import Any, TypedDict
 
 from . import turn
 from .settings import S
 
 ORDER = ["load", "gate", "understand", "decide", "retrieve", "compose", "guard", "after"]
-NODES = {"load": turn.n_load, "gate": turn.n_gate, "understand": turn.n_understand, "decide": turn.n_decide,
-         "retrieve": turn.n_retrieve, "compose": turn.n_compose, "guard": turn.n_guard, "after": turn.n_after}
+def _timed(name, fn):
+    """Measure each step of the turn (node_ms in the trace and the worker's [turn] log line)."""
+    def run(st):
+        t0 = time.perf_counter()
+        out = fn(st)
+        ms = dict(out.get("node_ms") or {})
+        ms[name] = int((time.perf_counter() - t0) * 1000)
+        out["node_ms"] = ms
+        return out
+    return run
+
+
+NODES = {k: _timed(k, f) for k, f in {
+    "load": turn.n_load, "gate": turn.n_gate, "understand": turn.n_understand, "decide": turn.n_decide,
+    "retrieve": turn.n_retrieve, "compose": turn.n_compose, "guard": turn.n_guard, "after": turn.n_after}.items()}
 
 
 class TurnState(TypedDict, total=False):
@@ -39,6 +53,7 @@ class TurnState(TypedDict, total=False):
     gate_line: Any
     gate_reason: str
     smalltalk: str
+    node_ms: dict
     limited: bool
     labels: dict
     decision: Any
@@ -48,6 +63,7 @@ class TurnState(TypedDict, total=False):
     past: list
     bubbles: list
     ai_data: dict
+    callback_emitted: bool      # compose already filed the callback for its promise (n_after must not add one)
     golden_used: list
     guard: dict
     notes: list
