@@ -8,8 +8,8 @@ Plain English:
   (oos_locked_skip_below) out of scope with no understand call; at or above it the understand call
   runs and the same two-signal rule applies.
 - Strikes belong to the user (not the chat session) and are forgotten after oos_strike_expiry_hours.
-- Strike 1 → FX-34, strike 2 → FX-35 (warning), strike 3 → FX-36 and a block of oos_block_minutes.
-  During the block every message gets FX-37 with no AI call at all, except complaint / distress words.
+- Strike 1 → FX-38, strike 2 → FX-39 (warning), strike 3 → FX-40 and a block of oos_block_minutes.
+  During the block every message gets FX-41 with no AI call at all, except complaint / distress words.
   When the block ends the strikes go back to 0. No AI words, no AI check.
 """
 import re
@@ -122,7 +122,7 @@ def similarity(kb, text: str):
 
 
 def fixed_line(strike_no: int) -> str:
-    """FX-34 for strike 1, FX-35 (warning) before the block, FX-36 when the block starts."""
+    """FX-38 for strike 1, FX-39 (warning) before the block, FX-40 when the block starts."""
     if strike_no <= 1:
-        return "FX-34"
-    return "FX-35" if strike_no < before_block() else "FX-36"
+        return "FX-38"
+    return "FX-39" if strike_no < before_block() else "FX-40"

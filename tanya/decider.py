@@ -15,18 +15,18 @@ from .settings import S
 from .timeutil import hm
 
 # Actions whose whole reply is a fixed line (no AI writing)
-FIXED_ONLY = {"LIMIT_SPEND", "BOUNDARY_ABUSE", "HAND_OVER_PERSON", "LIMIT_EDUCATION",
+FIXED_ONLY = {"LIMIT_SPEND", "BOUNDARY_ABUSE", "END_CHAT_ABUSE", "HAND_OVER_PERSON", "LIMIT_EDUCATION",
               "HAND_OVER_PURCHASE", "BOOK_CALL", "ASKS_IF_AI", "BOUNDARY_FIRM", "LIMITED_MODE",
-              "ANSWER_GUARANTEE", "EARLY_TRIAL_PRICING", "OUT_OF_SCOPE"}
+              "ANSWER_GUARANTEE", "EARLY_TRIAL_PRICING", "ANSWER_FOUNDER", "OUT_OF_SCOPE"}
 # Labels with their own row 9–19: any of them on → the out-of-scope row never applies
 ROW_9_19_LABELS = ("education_question", "purchase_intent", "prefers_call", "asks_if_ai", "interest",
                    "flirting", "support_question", "small_talk")
 # Actions that count toward the 30 education questions
 COUNTS_AS_EDUCATION = {"ANSWER_EDUCATION"}
 # Actions where emoji are not allowed (Personality Guide §3.5)
-NO_EMOJI = {"PAUSE_SELLING", "LOG_GRIEVANCE", "BOUNDARY_ABUSE", "REFUSE_AND_TEACH", "HAND_OVER_PERSON",
+NO_EMOJI = {"PAUSE_SELLING", "LOG_GRIEVANCE", "BOUNDARY_ABUSE", "END_CHAT_ABUSE", "REFUSE_AND_TEACH", "HAND_OVER_PERSON",
             "HAND_OVER_PURCHASE", "ANSWER_PRICE", "LIMIT_SPEND", "LIMIT_EDUCATION", "BOUNDARY_FIRM",
-            "ANSWER_GUARANTEE"}
+            "ANSWER_GUARANTEE", "ANSWER_FOUNDER"}
 
 
 @dataclass
@@ -58,11 +58,12 @@ def decide(labels: dict, rec: dict, now, limited: bool = False) -> Decision:
     # Row 3 — grievance: case logged, handled first
     if _on(labels, "grievance"):
         return Decision("LOG_GRIEVANCE", "R03", fixed_line="FX-10")
-    # Rows 4–5 — abuse (count already includes this message)
+    # Rows 4–5 — abuse: one strike per abusive message (count already includes this message), the same
+    # rule as the voice agent: a warning at strikes 1 and 2, the 3rd ends the chat for this session
     if _on(labels, "abuse"):
-        if sess.get("abuse", 0) >= S.get("abuse_count_for_handoff", 2):
-            return Decision("HAND_OVER_PERSON", "R04")
-        return Decision("BOUNDARY_ABUSE", "R05", fixed_line="FX-15")
+        if sess.get("abuse", 0) >= S.get("abuse_strikes_to_end_chat", 3):
+            return Decision("END_CHAT_ABUSE", "R04", fixed_line="FX-35")
+        return Decision("BOUNDARY_ABUSE", "R05", fixed_line="FX-34")
     # Row 6 — asks for a person, or 3 failed turns in this session
     if _on(labels, "wants_person") or sess.get("failed", 0) >= S.get("failed_turns_for_handoff", 3):
         reason = "R06" if _on(labels, "wants_person") else "R06-FAILED"
@@ -73,6 +74,9 @@ def decide(labels: dict, rec: dict, now, limited: bool = False) -> Decision:
     # Row 7G — money-guarantee question: fixed compliance line, no AI words
     if _on(labels, "asks_guarantee"):
         return Decision("ANSWER_GUARANTEE", "R07G", fixed_line="FX-20")
+    # Row 7F — founder question: fixed line, no AI words. Plan / offer questions keep their own rows.
+    if _on(labels, "asks_founder") and not _on(labels, "interest") and not _on(labels, "purchase_intent"):
+        return Decision("ANSWER_FOUNDER", "R07F", fixed_line="FX-37")
     # Kill switch 'limited': general and education only (Architecture §7.5)
     if limited and (_on(labels, "purchase_intent") or _on(labels, "interest") or _on(labels, "support_question")):
         return Decision("LIMITED_MODE", "R-LIMITED", fixed_line="FX-06")
@@ -82,8 +86,8 @@ def decide(labels: dict, rec: dict, now, limited: bool = False) -> Decision:
     if _on(labels, "interest") and not _on(labels, "purchase_intent") \
             and not any(r != "no consent" for r in why) \
             and _prices_hidden(rec, now):
-        return Decision("EARLY_TRIAL_PRICING", "R13E", fixed_line="FX-32")
-    # Row 7O — out of scope (oos.py): fixed line FX-34 / FX-35 / FX-36 (block starts); no AI words.
+        return Decision("EARLY_TRIAL_PRICING", "R13E", fixed_line="FX-36")
+    # Row 7O — out of scope (oos.py): fixed line FX-38 / FX-39 / FX-40 (block starts); no AI words.
     # Before Row 8 so it applies with or without consent; any Row 9–19 label keeps its own row.
     if labels.get("oos", {}).get("on") and not any(_on(labels, k) for k in ROW_9_19_LABELS):
         n = rec.get("oos", {}).get("strikes", 0) + 1

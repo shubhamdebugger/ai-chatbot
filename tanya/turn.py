@@ -20,7 +20,7 @@ from .brief import lead_brief
 from .company_info import add_website_line
 from .content_pack import PACK
 from .decider import Decision, FIXED_ONLY, COUNTS_AS_EDUCATION, NO_EMOJI, decide
-from .guard_input import injection, mask
+from .guard_input import abusive, injection, mask
 from .guard_output import ai_check, amounts, approved_text_for, emoji_rule, net
 from .handoff import open_case, request_callback, two_slots, when_phrase
 from .knowledge import is_placeholder
@@ -94,10 +94,10 @@ def n_gate(st):
         last_greet = rec["journey"].get("greeted_at")
         if last_greet and (now - parse(last_greet)).total_seconds() < S.get("greeting_min_gap_hours", 3) * 3600:
             g, reason = policy.GATE_SILENT, "GREETED_RECENTLY"
-    # off-topic block (oos.py): every message gets FX-37, no AI call; complaint / distress runs the normal flow
+    # off-topic block (oos.py): every message gets FX-41, no AI call; complaint / distress runs the normal flow
     if (st["kind"] == "message" and g != policy.GATE_SILENT and oos.blocked(oos.state(rec, now))
             and not oos.urgent(st["masked"])):
-        g, line, reason = policy.GATE_FIXED, "FX-37", "R-OOS-BLOCK"
+        g, line, reason = policy.GATE_FIXED, "FX-41", "R-OOS-BLOCK"
         _hide_oos_message(st)
         st["oos"] = {"user_id": st["user_id"], "path": "blocked", "decision": "BLOCKED",
                      "strike": rec["oos"]["strikes"], "blocked_until": rec["oos"]["blocked_until"]}
@@ -158,6 +158,8 @@ def n_understand(st):
     # --- session counters (this message included) ---
     if L["small_talk"]["on"]:
         sess["small_talk"] += 1
+    if not L["abuse"]["on"] and abusive(st["text"]):        # a curse word is a strike even if the AI missed it
+        L["abuse"] = {"on": True, "evidence": "curse word", "confidence": 1.0}
     if L["abuse"]["on"]:
         sess["abuse"] += 1
     if L["flirting"]["on"]:
@@ -189,7 +191,7 @@ def n_decide(st):
         if st["decision"].action == "OUT_OF_SCOPE":
             o["strikes"], o["last_at"] = o["strikes"] + 1, iso(st["now"])
             if o["strikes"] >= oos.before_block():
-                oos.start_block(o, st["now"])    # FX-36 now, FX-37 for every message until it ends
+                oos.start_block(o, st["now"])    # FX-40 now, FX-41 for every message until it ends
             _hide_oos_message(st)
         else:
             o["strikes"] = 0                     # an in-scope message answered the normal way
@@ -198,6 +200,11 @@ def n_decide(st):
                          blocked_until=o.get("blocked_until"))
     if st["decision"].action == "PAUSE_SELLING":
         rec["session"]["selling_paused"] = True
+    if st["decision"].action == "END_CHAT_ABUSE":
+        # 3rd strike: FX-35 is her last line; the gate keeps her silent until a new session starts
+        rec["session"]["ended"] = "abuse"
+        _ev(st, "alert", kind="chat_ended_abuse", strikes=rec["session"]["abuse"],
+            session=rec["session"]["id"], conversation_id=rec["conversation_id"])
     return st
 
 

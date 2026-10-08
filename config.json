@@ -13,7 +13,7 @@
   "early_pricing_hidden_until_trial_day": {
     "value": 2,
     "owner": "Open - early-trial pricing restriction",
-    "note": "Plan/price questions before this trial day, and on it until early_pricing_hidden_until_time, get FX-32 (no prices) instead of ANSWER_PRICE; Day 1 = trial start date"
+    "note": "Plan/price questions before this trial day, and on it until early_pricing_hidden_until_time, get FX-36 (no prices) instead of ANSWER_PRICE; Day 1 = trial start date"
   },
   "early_pricing_hidden_until_time": {
     "value": "15:30",
@@ -136,10 +136,10 @@
     "owner": "Claude - Personality Guide 10",
     "note": "Approved examples shown to the model"
   },
-  "abuse_count_for_handoff": {
-    "value": 2,
-    "owner": "Claude - Personality Guide 5.3",
-    "note": "Abusive messages in a session before hand-off"
+  "abuse_strikes_to_end_chat": {
+    "value": 3,
+    "owner": "Claude - same rule as the voice agent (voice_context.ABUSE_MAX_STRIKES)",
+    "note": "Abusive messages in a session: each one is a strike with a warning (FX-34); this strike ends the chat (FX-35)"
   },
   "contradictions_visible_to_agents": {
     "value": false,
