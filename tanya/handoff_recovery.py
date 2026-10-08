@@ -8,7 +8,7 @@ Plain English:
 - An agent REPLY in the chat before the deadline keeps HUMAN mode (Tanya never comes back on her own then).
   An agent merely ASSIGNED to the chat is recorded but is not enough.
 - At the deadline, with no agent reply (checked in the CRM itself, in case a staff webhook was lost):
-  Tanya posts FX-32 (day) / FX-33 (night), HUMAN mode ends, and if the customer wrote while waiting, Tanya
+  Tanya posts FX-34 (day) / FX-35 (night), HUMAN mode ends, and if the customer wrote while waiting, Tanya
   answers his latest message.
 - State: Redis (tanya:handoff:{conv}, tanya:handoff_due) for the live check; every step is copied to MySQL
   (orch_handoffs + orch_audit) by the persister. After a Redis loss the open handoffs are re-seeded from MySQL.
@@ -149,7 +149,7 @@ def recovery_check(store, adapter, intake=None, now=None):
         if not h.get("recovery_posted"):
             rec = store.get(h.get("user_id")) or {}
             lang = (rec.get("profile") or {}).get("language", "hinglish")
-            line = "FX-32" if h.get("period") == "day" else "FX-33"
+            line = "FX-34" if h.get("period") == "day" else "FX-35"
             try:
                 crm_id = adapter.post_message(conv, PACK.fixed(line, lang))
             except Exception as e:
@@ -213,7 +213,7 @@ def agent_idle_check(store, adapter, intake=None, now=None):
             continue
         h = store.handoff_get(conv)
         if h and h.get("status") == "open":                      # Tanya's own handoff, no agent reply yet: that timer
-            store.agent_idle_clear(conv)                         # (FX-32 / FX-33) decides, not this one
+            store.agent_idle_clear(conv)                         # (FX-34 / FX-35) decides, not this one
             continue
         try:                                                     # the CRM is the truth: a newer agent message whose
             if adapter.staff_replied_after(conv, e.get("last_staff_id")):   # webhook was lost keeps the agent on

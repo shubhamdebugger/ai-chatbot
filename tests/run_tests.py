@@ -7,6 +7,7 @@ Optional, never against the live stores (.env is loaded, so REDIS_URL / MYSQL_DB
   TEST_REDIS_URL=redis://localhost:6379/15  → Redis memory and streams tested (that db is FLUSHED)
   TEST_MYSQL=1                              → persister tested against MYSQL_* (writes U1001 rows)
 """
+import json
 import os
 import sys
 import tempfile
@@ -318,7 +319,6 @@ def guarantee_question_gives_fixed_line():
 
 
 # ---------------------------------------------------------------- founder question (R07F, FX-33)
-FX33 = "Founder Details Printed"
 FOUNDER_QUESTIONS = ["who is the founder?", "Founder kaun hai?", "TG Levels ka owner kaun hai?",
                      "company kisne banayi?", "who started TG Levels?", "Tushar Ghone kaun hai?",
                      "tell me more about your CEO", "TG Levels ka malik kaun hai?", "संस्थापक कौन है?"]
@@ -332,7 +332,9 @@ def founder_question_gives_fixed_line_without_ai():
             turn(s, uid, "Hello")
             st = turn(s, uid, msg)
             assert [b["id"] for b in st["bubbles"]] == ["FX-33"], (uid, msg, st["bubbles"])
-            assert st["bubbles"][0]["text"] == FX33, (msg, st["bubbles"][0]["text"])
+            approved = {PACK.fixed("FX-33", lang) for lang in ("english", "hinglish", "hindi")}   # in his language
+            # a company question also gets the official website as the last line
+            assert any(st["bubbles"][0]["text"].startswith(t) for t in approved), (msg, st["bubbles"][0]["text"])
             assert st["trace"]["action"] == "FIXED_GATE" and st["trace"]["reason"] == "R07F", (msg, st["trace"])
             assert st["llm_calls"] == [], (msg, st["llm_calls"])
 
@@ -364,6 +366,25 @@ def founder_offer_or_complaint_keeps_its_own_flow():
         st["trace"]
     st = turn(fresh_store(), "U1001", "Stop-loss kya hota hai?")
     assert "FX-33" not in [b["id"] for b in st["bubbles"]]
+
+
+@test
+def content_files_have_no_duplicate_ids():
+    # JSON keeps the last of two equal keys without a word: two branches both adding "FX-33" made the
+    # founder question answer with the handoff-recovery line. Every key must be unique.
+    def unique(pairs):
+        keys = [k for k, _ in pairs]
+        dupes = sorted({k for k in keys if keys.count(k) > 1})
+        assert not dupes, f"duplicate keys: {dupes}"
+        return dict(pairs)
+    for path in sorted((ROOT / "content").glob("*.json")):
+        try:
+            json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique)
+        except AssertionError as e:
+            raise AssertionError(f"{path.name}: {e}")
+    # fixed lines stay in number order, so a new one is added after the last, never next to another branch's
+    ids = [k for k in json.loads((ROOT / "content" / "fixed_lines.json").read_text(encoding="utf-8")) if k.startswith("FX-")]
+    assert ids == sorted(ids, key=lambda k: int(k[3:])), f"fixed_lines.json out of order: {ids}"
 
 
 @test
@@ -607,10 +628,8 @@ def night_person_request_gives_honest_time():
 
 
 # ---------------------------------------------------------------- early-trial pricing (R13E, FX-32)
-FX32_EN = ("TG Levels has multiple plans and offerings, and you’ll receive an exclusive offer directly from our founder, "
-           "Tushar Ghone. Please stay tuned — your exclusive offer is coming soon.")
-FX32_HINGLISH = ("TG Levels ke kai plans aur offerings hain, aur aapko hamare founder, Tushar Ghone, ki taraf se seedha ek "
-                 "exclusive offer milega. Bas thoda intezaar kijiye — aapka exclusive offer jald hi aa raha hai.")
+FX32_EN = PACK.fixed("FX-32", "english")             # the approved text (content/fixed_lines.json)
+FX32_HINGLISH = PACK.fixed("FX-32", "hinglish")
 PRICE_QUESTIONS = ["plans kya hai?", "what are the plans?", "what are the prices?", "pricing kya hai?",
                    "kitne ka hai?", "plan ki price kya hai?", "monthly plan kya hai?", "subscription kitne ka hai?"]
 
@@ -888,7 +907,7 @@ def no_agent_reply_day_recovers_after_10_minutes():
     start_handoff(s, "C80", "U1", "HAND_OVER_PERSON", "R06", DAY, last_message_id="800")
     assert recovery_check(s, crm, intake, now=DAY + timedelta(minutes=9)) == []        # not yet
     assert recovery_check(s, crm, intake, now=DAY + timedelta(minutes=11)) == ["C80"]
-    assert crm.posts == [("C80", PACK.fixed("FX-32", "hinglish"))], crm.posts
+    assert crm.posts == [("C80", PACK.fixed("FX-34", "hinglish"))], crm.posts
     assert not s.human_flag("C80", DAY + timedelta(minutes=11)) and s.handoff_get("C80")["status"] == "recovered"
     assert intake.events and intake.events[0]["event_id"] == "801-resume", intake.events   # his waiting message
     assert recovery_check(s, crm, intake, now=DAY + timedelta(minutes=12)) == [] and len(crm.posts) == 1   # once
@@ -942,7 +961,7 @@ def night_handoff_waits_12_hours_then_fx33():
     assert recovery_check(s, crm, now=NIGHT + timedelta(minutes=30)) == []
     assert recovery_check(s, crm, now=NIGHT + timedelta(hours=11, minutes=59)) == []
     assert recovery_check(s, crm, now=NIGHT + timedelta(hours=12, minutes=1)) == ["C85"]
-    assert crm.posts[-1][1] == PACK.fixed("FX-33", "hinglish")
+    assert crm.posts[-1][1] == PACK.fixed("FX-35", "hinglish")
 
 
 @test
