@@ -61,19 +61,63 @@ def notify(kind, payload):
             print(f"[notify] webhook failed {type(e).__name__}", file=sys.stderr, flush=True)
 
 
+def _slot(raw):
+    try:
+        slot = json.loads(raw) if isinstance(raw, (str, bytes)) else (raw or {})
+    except ValueError:
+        return {}
+    return slot if isinstance(slot, dict) else {}
+
+
+def _owner(slot, stored):
+    """Agent who owns a callback: the admin's pick in the CRM (slot.agent_id) wins over the stored/inherited one."""
+    picked = str(slot.get("agent_id") or "")
+    return picked if picked not in ("", "0") else str(stored or "")
+
+
+def _inherit(c, cb_id, agent, now_s):
+    """Give an owner-less callback the chat's agent, once. Never overwrites: the CRM admin changes owners."""
+    n = c.execute("UPDATE orch_callbacks SET assigned_agent_id=%s WHERE callback_id=%s AND COALESCE(assigned_agent_id,'')=''",
+                  (agent, cb_id))
+    if n:
+        _audit(c, cb_id, "assigned", "system", {"agent_id": agent, "source": "chat"}, now_s)
+    return bool(n)
+
+
+def _inherit_voice(c, adapter, now_s, days):
+    """Voice callbacks have no conversation_id column (the chat is in slot.sb_conversation_id): same inherit rule."""
+    c.execute("SELECT callback_id, assigned_agent_id, slot FROM orch_callbacks WHERE callback_id LIKE 'CB-V-%%' "
+              "AND state IN ('requested','booked') AND COALESCE(status,'pending') <> 'completed' "
+              "AND (conversation_id IS NULL OR conversation_id = '') AND requested_at >= NOW() - INTERVAL %s DAY", (days,))
+    for cb_id, stored, raw in c.fetchall():
+        slot = _slot(raw)
+        conv = str(slot.get("sb_conversation_id") or "")
+        if _owner(slot, stored) or slot.get("agent_cleared") or not conv.isdigit():
+            continue
+        try:
+            agent = adapter.conversation_agent(conv)
+        except Exception as e:
+            print(f"[callbacks] CRM read failed conv={conv}: {type(e).__name__}", file=sys.stderr, flush=True)
+            continue
+        if agent:
+            _inherit(c, cb_id, agent, now_s)
+
+
 def sla_check(conn, adapter, now, days=7):
-    """Recompute status of every open callback from the CRM. Returns the list of status changes."""
+    """Recompute status of every open callback from the CRM. Returns the list of status changes.
+    Owner rule: a callback without an owner takes the chat's agent (once, unless an admin cleared it);
+    a callback with an owner keeps it until an admin reassigns it in the CRM."""
     from .timeutil import iso
     now_s = iso(now)[:19].replace("T", " ")
     changes = []
     with conn.cursor() as c:
         c.execute("SELECT callback_id, user_id, conversation_id, kind, COALESCE(status,'pending'), due_at, "
-                  "assigned_agent_id, source_message_id, overdue_notified_at FROM orch_callbacks "
+                  "assigned_agent_id, source_message_id, overdue_notified_at, slot FROM orch_callbacks "
                   "WHERE COALESCE(status,'pending') <> 'completed' AND requested_at >= NOW() - INTERVAL %s DAY "
                   "AND conversation_id IS NOT NULL AND conversation_id <> ''", (days,))
         rows = c.fetchall()
         agents, replied_cache = {}, {}
-        for cb_id, uid, conv, kind, status, due, agent_prev, src, notified in rows:
+        for cb_id, uid, conv, kind, status, due, agent_prev, src, notified, slot_raw in rows:
             try:
                 if conv not in agents:
                     agents[conv] = adapter.conversation_agent(conv)
@@ -85,11 +129,11 @@ def sla_check(conn, adapter, now, days=7):
             except Exception as e:                       # CRM unreachable: keep the old status, try next run
                 print(f"[callbacks] CRM read failed conv={conv}: {type(e).__name__}", file=sys.stderr, flush=True)
                 continue
-            if agent and agent != (agent_prev or ""):
-                ev = "assigned" if not agent_prev else "reassigned"
-                c.execute("UPDATE orch_callbacks SET assigned_agent_id=%s WHERE callback_id=%s", (agent, cb_id))
-                _audit(c, cb_id, ev, "crm", {"agent_id": agent, "previous": agent_prev or ""}, now_s)
-            new = "in_progress" if replied else ("assigned" if agent else "pending")
+            slot = _slot(slot_raw)
+            owner = _owner(slot, agent_prev)
+            if not owner and agent and not slot.get("agent_cleared") and _inherit(c, cb_id, agent, now_s):
+                owner = agent
+            new = "in_progress" if replied else ("assigned" if owner else "pending")
             if new != "in_progress" and due is not None and str(due) < now_s:
                 new = "overdue"
             if new != status:
@@ -98,12 +142,13 @@ def sla_check(conn, adapter, now, days=7):
                 changes.append((cb_id, status, new))
             if new == "overdue" and not notified:
                 payload = {"callback_id": cb_id, "user_id": uid, "conversation_id": conv, "kind": kind,
-                           "due_at": str(due), "agent_id": agent or ""}
+                           "due_at": str(due), "agent_id": owner or ""}
                 c.execute("INSERT INTO orch_alerts (user_id,kind,detail,at) VALUES (%s,'callback_overdue',%s,%s)",
                           (uid, json.dumps(payload, default=str), now_s))
                 c.execute("UPDATE orch_callbacks SET overdue_notified_at=%s WHERE callback_id=%s", (now_s, cb_id))
                 _audit(c, cb_id, "overdue_notified", "sla_monitor", {"to": ["team_lead", "operations_admin"]}, now_s)
                 notify("callback_overdue", payload)
+        _inherit_voice(c, adapter, now_s, days)
     conn.commit()
     return changes
 
