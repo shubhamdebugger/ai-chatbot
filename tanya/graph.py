@@ -42,6 +42,9 @@ class TurnState(TypedDict, total=False):
     llm: Any
     kb: Any
     seed_fn: Any
+    adapter: Any                # CRM adapter: his phone for the trade summary lookup
+    trade_summary: dict         # trade summary lookup of this turn (trade_summary.py), also in the trace
+    fx_vals: dict               # values for the fixed line chosen in retrieve (FX-44…49)
     rec: dict
     masked: str
     masked_kinds: list

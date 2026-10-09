@@ -14,6 +14,7 @@ YES_NO_LABELS = [
     "distress", "grievance", "wants_person", "purchase_intent", "interest",
     "timing_objection", "prefers_call", "abuse", "flirting", "asks_if_ai",
     "not_helpful", "refers_to_past", "asks_guarantee", "out_of_scope", "asks_founder",
+    "trade_results_question",
 ]
 
 FACT_FIELDS = {
@@ -58,6 +59,7 @@ Labels — list in "on" ONLY the labels that apply (often none: []):
 - abuse: abusive or insulting words.
 - flirting: romantic or personal questions to the assistant (single?, date, photo, love).
 - asks_if_ai: asks whether she is a bot/AI or a real person.
+- trade_results_question: asks how TG Level's calls / trades / research did on a day (results, summary, P&L, targets hit, "kal ke trades kaise gaye", "aaj ka result"), OR says he made a loss / is in loss on our calls or trades ("aaj loss ho gaya", "your calls gave loss"). NOT asking what to buy now (that is trade_advice_seeking).
 - not_helpful: says the answer did not help, or complains she repeats herself.
 - refers_to_past: refers to something said in an earlier chat.
 - out_of_scope: the message has nothing to do with TG Level (its app, alerts, services, trial, subscription, team) AND nothing to do with money or finance. Requests for unrelated content or help (recipes, poems, essays, jokes, code, sports, movies, travel, health, gadgets, general knowledge) are out of scope. NOT out of scope: greetings and small talk, questions about the assistant, support/account/payment issues, complaints, and ANY money or finance question — stock market, trading, investing, saving, banking, loans, insurance, tax, interest rates, inflation, the economy, gold, FD, mutual funds, demat, IPO, crypto. If unsure, answer no (do not list it).
@@ -107,12 +109,23 @@ GUARANTEE_WORDS = ("guarantee", "gurantee", "gurrantee", "guaranty", "pakka",
                    "sure shot", "100%", "double", "dugna")
 
 
+# results / summary of our trades, or a loss on them ("kal ke trades kaise gaye", "aaj loss ho gaya calls se")
+RESULTS_RX = re.compile(
+    r"(trade\s*summary|\bsummary\b|\bp\s*&\s*l\b|\bpnl\b|"
+    r"\b(trades?|calls?|alerts?|research)\b[^.?!]{0,30}\b(result|kaise\s+(gaye|gaya|rahe|raha)|how\s+(did|were|was)|profit|loss|target)|"
+    r"\b(result|loss|profit)\b[^.?!]{0,30}\b(trades?|calls?|alerts?)\b|"
+    r"ट्रेड[^.?!]{0,30}(रिज़ल्ट|नतीजा|लॉस|घाटा|मुनाफ़ा))", re.I)
+
+
 def _guarantee_backup(labels: dict, text: str) -> dict:
-    """Keyword backup: the label turns on even when the AI misses it."""
+    """Keyword backups: the label turns on even when the AI misses it."""
     low = (text or "").lower()
     hit = next((w for w in GUARANTEE_WORDS if w in low), "")
     if hit and not labels["labels"]["asks_guarantee"]["on"]:
         labels["labels"]["asks_guarantee"] = {"on": True, "evidence": hit, "confidence": 1.0}
+    m = RESULTS_RX.search(text or "")
+    if m and not labels["labels"]["trade_results_question"]["on"]:
+        labels["labels"]["trade_results_question"] = {"on": True, "evidence": m.group(0)[:80], "confidence": 1.0}
     return labels
 
 

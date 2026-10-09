@@ -16,6 +16,8 @@ import re
 from . import memory_model as mm
 from . import oos
 from . import policy
+from . import consent
+from . import trade_summary as ts
 from .brief import lead_brief
 from .company_info import add_website_line
 from .content_pack import PACK
@@ -30,7 +32,7 @@ from .settings import S
 from .timeutil import iso, parse, stamp
 from .understand import defaults, understand
 
-USEFUL_ANSWERS = {"ANSWER_EDUCATION", "ANSWER", "ANSWER_SUPPORT", "ANSWER_PRICE", "ANSWER_ONLY"}
+USEFUL_ANSWERS = {"ANSWER_EDUCATION", "ANSWER", "ANSWER_SUPPORT", "ANSWER_PRICE", "ANSWER_ONLY", "ANSWER_TRADE_SUMMARY"}
 
 
 def _ev(st, etype, **data):
@@ -61,6 +63,10 @@ def n_load(st):
     mm.ensure_day(rec, now)
     if st["new_session"]:
         _ev(st, "session_start", session=rec["session"]["id"])
+    # DPDP consent from the app (terms accepted / completed profile): checked until it is on, cached 5 min
+    if not rec["profile"].get("consent") and consent.refresh(rec, _phone(st)):
+        _ev(st, "audit", entity="user", entity_id=str(uid), event="consent_on", actor="app",
+            detail={"source": "app terms / profile"})
     if st["kind"] == "message":
         masked, kinds = mask(st["text"])
         st["masked"], st["masked_kinds"], st["injection"] = masked, kinds, injection(st["text"])
@@ -185,6 +191,7 @@ def n_decide(st):
     if st["kind"] == "app_open":
         st["decision"] = Decision("GREETING", "R-GREET")
     else:
+        st["labels"]["text"] = st.get("masked", "")       # the decider reads his words for a real complaint
         st["decision"] = decide(st["labels"], rec, st["now"], st.get("limited", False))
     if st.get("oos"):                            # the message reached the out-of-scope check
         o = rec["oos"]
@@ -201,7 +208,8 @@ def n_decide(st):
         st["oos"].update(decision="OOS" if st["decision"].action == "OUT_OF_SCOPE" else
                          ("bypassed" if st["oos"]["bypass"] else "in-scope"), strike=o["strikes"],
                          blocked_until=o.get("blocked_until"))
-    if st["decision"].action == "PAUSE_SELLING":
+    _answer_to_ask_day(st)
+    if st["decision"].action == "PAUSE_SELLING" or st["decision"].reason == "R-TS-LOSS":
         rec["session"]["selling_paused"] = True
     if st["decision"].action == "END_CHAT_ABUSE":
         # 3rd strike: FX-35 is her last line; the gate keeps her silent until a new session starts
@@ -209,6 +217,22 @@ def n_decide(st):
         _ev(st, "alert", kind="chat_ended_abuse", strikes=rec["session"]["abuse"],
             session=rec["session"]["id"], conversation_id=rec["conversation_id"])
     return st
+
+
+# safety rows that still win over his answer to "which day did you trade?"
+_TS_KEEP = {"PAUSE_SELLING", "LOG_GRIEVANCE", "BOUNDARY_ABUSE", "END_CHAT_ABUSE", "HAND_OVER_PERSON",
+            "REFUSE_AND_TEACH", "LIMITED_MODE", "ANSWER_GUARANTEE"}
+
+
+def _answer_to_ask_day(st):
+    """Last turn she asked which day he traded (FX-51/52): a day in this message → that day's summary.
+    Asked once only; a reply without a day goes the normal way."""
+    ask = st["rec"]["session"].pop("ts_ask_day", None)
+    if not ask or st["kind"] != "message" or st["decision"].action in _TS_KEEP:
+        return
+    if st["decision"].action != "ANSWER_TRADE_SUMMARY" and ts.resolve_date(st["masked"], st["now"]) != "latest":
+        st["decision"] = Decision("ANSWER_TRADE_SUMMARY", "R-TS-LOSS" if ask.get("loss") else "R-TS",
+                                  notes=["answer to: which day did you trade?"])
 
 
 # ------------------------------------------------------------------ retrieve
@@ -235,6 +259,8 @@ def n_retrieve(st):
             st["decision"] = Decision("SUPPORT_CASE", "R17-NOAPPROVED", fixed_line="FX-19")
     elif d.action == "ANSWER_PRICE":
         st["plan_row"], st["why_line"] = PACK.plan_for_profile(rec["facts"])
+    elif d.action == "ANSWER_TRADE_SUMMARY":
+        _retrieve_trade_summary(st)
     if st["labels"]["labels"].get("refers_to_past", {}).get("on"):
         words = [w for w in re.findall(r"\w+", st["masked"].lower()) if w not in _STOP and len(w) > 2]
         for m in reversed(rec["messages"][:-11]):
@@ -243,6 +269,45 @@ def n_retrieve(st):
             if len(st["past"]) >= 3:
                 break
     return st
+
+
+def _phone(st) -> str:
+    """His 10-digit phone: from the CRM profile (cached), else the memory record (dev / test users)."""
+    adapter, rec = st.get("adapter"), st["rec"]
+    if adapter is not None and getattr(adapter, "numeric_ids", False) and str(st["user_id"]).isdigit():
+        try:
+            from .access import phone_for
+            return phone_for(adapter, st["store"], st["user_id"])
+        except Exception:
+            return ""
+    return re.sub(r"\D", "", str(rec["profile"].get("phone") or ""))[-10:]
+
+
+def _retrieve_trade_summary(st):
+    """The day he asks about, only from the days his group and plan allow (decided by pwa-node-backend).
+    A published day → APPROVED KNOWLEDGE for the reply; anything else → a fixed line, never a guessed number."""
+    date = ts.resolve_date(st["masked"], st["now"])
+    loss = st["decision"].reason == "R-TS-LOSS" or bool(ts.LOSS_RX.search(st["masked"]))
+    if date == "latest":
+        # no day named → ask which day he traded; never list the days we have (his next message answers it)
+        st["rec"]["session"]["ts_ask_day"] = {"loss": loss}
+        st["trade_summary"] = {"asked": date, "status": "ask_day"}
+        st["decision"] = Decision("TRADE_SUMMARY_INFO", "R-TS-ASKDAY",
+                                  fixed_line=ts.ASK_DAY_LOSS if loss else ts.ASK_DAY)
+        return
+    data = ts.lookup(_phone(st), date)
+    status = data.get("status", "unavailable")
+    st["trade_summary"] = {"asked": date, "status": status, "group": data.get("group"), "date": data.get("date"),
+                           "window": data.get("window")}
+    if status == "ok" and data.get("day"):
+        st["hits"] = [ts.as_knowledge(data)]
+        if loss:
+            # a loss on his side: one lesson to lean on (after a loss / position size), never a trade view
+            st["hits"] += st["kb"].search("after a loss what to do position size stop loss", top_k=1, categories=["Lesson"])
+        return
+    lang = st["labels"].get("language") or st["rec"]["profile"].get("language", "hinglish")
+    st["decision"] = Decision("TRADE_SUMMARY_INFO", f"R-TS-{status.upper()}", fixed_line=ts.STATUS_LINE.get(status, "FX-49"))
+    st["fx_vals"] = ts.line_values(data, lang)
 
 
 # ------------------------------------------------------------------ compose
@@ -316,7 +381,7 @@ def n_compose(st):
             rec["session"]["greeted_this_session"] = True
     pending_cb = []
     if fx:
-        vals = {"name": name, "limit": S.get("education_questions_per_day", 30)}
+        vals = {"name": name, "limit": S.get("education_questions_per_day", 30), **st.get("fx_vals", {})}
         if fx == "FX-25":
             vals["topic"] = rec["journey"].get("last_topic", "")
         if fx == "FX-10":
@@ -397,10 +462,14 @@ def n_guard(st):
                 allowed |= amounts(m["text"])
         for h in st.get("hits", []):
             allowed |= amounts(h["text"])
-        blocked, hits, warns = net(b["text"], allowed)
+        # trade summary answers report published past trades: strikes / levels pass only when the number is in the sheet
+        report = d.action == "ANSWER_TRADE_SUMMARY"
+        sheet = ts.report_numbers(" ".join(h["text"] for h in st.get("hits", []) if h.get("doc_id") == "TRADE-SUMMARY"))
+        blocked, hits, warns = net(b["text"], allowed, report_numbers=sheet if report else None)
         st["guard"].update(net_blocked=blocked, net_hits=hits, warnings=warns)
         if not blocked:
-            ok, problems, res = ai_check(st["llm"], b["text"], approved_text_for(st.get("hits"), d.action))
+            ok, problems, res = ai_check(st["llm"], b["text"], approved_text_for(st.get("hits"), d.action), report=report,
+                                     customer=st.get("masked", ""))
             _usage(st, res)
             st["guard"].update(ai_pass=ok, ai_problems=problems)
         if blocked or not st["guard"]["ai_pass"]:
@@ -415,6 +484,11 @@ def n_guard(st):
             and any(b["kind"] == "ai" for b in st["bubbles"]):
         st["bubbles"].append({"id": "FX-17", "kind": "fixed", "text": PACK.fixed("FX-17", lang)})
         rec["session"]["disclaimer_shown"] = bool(S.get("disclaimer_once_per_session", True))
+    # past results reported → the fixed past-performance line, once per session (FX-50)
+    if d.action == "ANSWER_TRADE_SUMMARY" and any(b["kind"] == "ai" for b in st["bubbles"]) \
+            and not rec["session"].get("ts_disclaimer_shown"):
+        st["bubbles"].append({"id": ts.DISCLAIMER_LINE, "kind": "fixed", "text": PACK.fixed(ts.DISCLAIMER_LINE, lang)})
+        rec["session"]["ts_disclaimer_shown"] = True
     # company / address / contact question → official website as the last line, after every check (also after FX-12)
     if st["kind"] == "message":
         add_website_line(st["bubbles"], st.get("masked") or st.get("text", ""), d.action, st.get("labels"))
@@ -476,6 +550,7 @@ def n_after(st):
         "new_facts": st["labels"].get("new_facts", []),
         "action": d.action, "reason": d.reason, "addon": d.addon, "addon_detail": d.addon_detail,
         "tier": d.tier, "knowledge": [f"{h['doc_id']} ({h['score']})" for h in st.get("hits", [])],
+        "trade_summary": st.get("trade_summary"),
         "golden": st.get("golden_used", []), "guard": st["guard"],
         "bubbles": [b["id"] for b in st["bubbles"]],
         "temperature": temp, "counters": {"education_used": rec["counters"]["education_used"],

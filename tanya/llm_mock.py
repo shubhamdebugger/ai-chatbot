@@ -35,6 +35,9 @@ def _label(text):
     for k, rx in _RULES.items():
         m = re.search(rx, t)
         labels[k] = {"on": bool(m), "evidence": m.group(0) if m else "", "confidence": 0.9 if m else 0.0}
+    from .understand import RESULTS_RX
+    m = RESULTS_RX.search(text)
+    labels["trade_results_question"] = {"on": bool(m), "evidence": m.group(0) if m else "", "confidence": 0.9 if m else 0.0}
     if labels["purchase_intent"]["on"] and re.search(r"(nahi|nahin|not)", t) and "le leta" not in t:
         labels["purchase_intent"] = {"on": False, "evidence": "", "confidence": 0.0}
     facts = []
@@ -98,6 +101,9 @@ def mock_complete(system, messages):
     if "TASK: UNDERSTAND" in system:
         text = last.split("LAST CUSTOMER MESSAGE:\n", 1)[-1]
         return json.dumps(_label(text), ensure_ascii=False)
+    if "TASK: CHECK" in system and "REPORTS the past trades" in system:     # trade summary answer
+        bad = re.search(r"(guaranteed profit|sure shot|aaj buy|buy now|abhi (buy|le lo)|kal (upar|neeche)|will go up)", last.lower())
+        return json.dumps({"pass": not bad, "problems": [bad.group(0)] if bad else []})
     if "TASK: CHECK" in system:
         bad = re.search(r"(guaranteed profit|sure shot call|buy nifty|target \d+)", last.lower())
         return json.dumps({"pass": not bad, "problems": [bad.group(0)] if bad else []})

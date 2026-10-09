@@ -7,6 +7,7 @@ carries a reason code (R01…R20) that goes into the trace.
 
 The AI later writes the words for that action; it never chooses the action.
 """
+import re
 from dataclasses import dataclass, field
 
 from . import memory_model as mm
@@ -17,7 +18,7 @@ from .timeutil import hm
 # Actions whose whole reply is a fixed line (no AI writing)
 FIXED_ONLY = {"LIMIT_SPEND", "BOUNDARY_ABUSE", "END_CHAT_ABUSE", "HAND_OVER_PERSON", "LIMIT_EDUCATION",
               "HAND_OVER_PURCHASE", "BOOK_CALL", "ASKS_IF_AI", "BOUNDARY_FIRM", "LIMITED_MODE",
-              "ANSWER_GUARANTEE", "EARLY_TRIAL_PRICING", "ANSWER_FOUNDER", "OUT_OF_SCOPE"}
+              "ANSWER_GUARANTEE", "EARLY_TRIAL_PRICING", "ANSWER_FOUNDER", "OUT_OF_SCOPE", "TRADE_SUMMARY_INFO"}
 # Labels with their own row 9–19: any of them on → the out-of-scope row never applies
 ROW_9_19_LABELS = ("education_question", "purchase_intent", "prefers_call", "asks_if_ai", "interest",
                    "flirting", "support_question", "small_talk")
@@ -26,7 +27,7 @@ COUNTS_AS_EDUCATION = {"ANSWER_EDUCATION"}
 # Actions where emoji are not allowed (Personality Guide §3.5)
 NO_EMOJI = {"PAUSE_SELLING", "LOG_GRIEVANCE", "BOUNDARY_ABUSE", "END_CHAT_ABUSE", "REFUSE_AND_TEACH", "HAND_OVER_PERSON",
             "HAND_OVER_PURCHASE", "ANSWER_PRICE", "LIMIT_SPEND", "LIMIT_EDUCATION", "BOUNDARY_FIRM",
-            "ANSWER_GUARANTEE", "ANSWER_FOUNDER"}
+            "ANSWER_GUARANTEE", "ANSWER_FOUNDER", "ANSWER_TRADE_SUMMARY"}
 
 
 @dataclass
@@ -52,11 +53,16 @@ def decide(labels: dict, rec: dict, now, limited: bool = False) -> Decision:
     consent = rec["profile"].get("consent", False)
     tier = "detailed" if labels.get("complexity") == "detailed" else "fast"
 
-    # Row 2 — distress: support first, selling paused for the session
-    if _on(labels, "distress"):
+    results = _on(labels, "trade_results_question")
+    # "your calls gave me a loss" is often labelled a grievance too; only a real complaint (refund, fraud,
+    # cheating, a formal complaint) keeps Row 3 ahead of the trade summary comparison
+    complaint = _on(labels, "grievance") and (not results or _strong_grievance(labels))
+    # Row 2 — distress: support first, selling paused for the session. A loss on OUR calls ("aaj loss ho
+    # gaya calls se") is answered from that day's trade summary instead (Row TS), unless it is a complaint.
+    if _on(labels, "distress") and not (results and not complaint):
         return Decision("PAUSE_SELLING", "R02", notes=["selling paused for this session"])
     # Row 3 — grievance: case logged, handled first
-    if _on(labels, "grievance"):
+    if complaint:
         return Decision("LOG_GRIEVANCE", "R03", fixed_line="FX-10")
     # Rows 4–5 — abuse: one strike per abusive message (count already includes this message), the same
     # rule as the voice agent: a warning at strikes 1 and 2, the 3rd ends the chat for this session
@@ -74,6 +80,12 @@ def decide(labels: dict, rec: dict, now, limited: bool = False) -> Decision:
     # Row 7G — money-guarantee question: fixed compliance line, no AI words
     if _on(labels, "asks_guarantee"):
         return Decision("ANSWER_GUARANTEE", "R07G", fixed_line="FX-20")
+    # Row TS — results of our trades on a day, or a loss on our calls: answered from the RA's published trade
+    # summary (trade_summary.py), only the days his group and plan allow. Before Row 8: past results are
+    # service facts, given with or without consent; never selling here.
+    if results:
+        return Decision("ANSWER_TRADE_SUMMARY", "R-TS-LOSS" if _on(labels, "distress") else "R-TS",
+                        notes=["selling paused for this session"] if _on(labels, "distress") else [])
     # Row 7F — founder question: fixed line, no AI words. Plan / offer questions keep their own rows.
     if _on(labels, "asks_founder") and not _on(labels, "interest") and not _on(labels, "purchase_intent"):
         return Decision("ANSWER_FOUNDER", "R07F", fixed_line="FX-37")
@@ -135,6 +147,16 @@ def decide(labels: dict, rec: dict, now, limited: bool = False) -> Decision:
     d = Decision("ANSWER", "R20", tier=tier)
     _addon(d, rec, suppressed)
     return d
+
+
+_STRONG_GRIEVANCE = re.compile(r"(refund|paise\s*wapas|money\s*back|fraud|cheat|scam|dhokha|dhoka|complaint|shikayat|"
+                               r"consumer\s*court|sebi\s*(me|mein|par|pe)?\s*complaint|police|धोखा|शिकायत|रिफंड)", re.I)
+
+
+def _strong_grievance(labels: dict) -> bool:
+    """A real complaint: refund / fraud / cheating / a formal complaint, not only "your calls gave me a loss"."""
+    ev = labels["labels"].get("grievance", {}).get("evidence", "") + " " + labels.get("text", "")
+    return bool(_STRONG_GRIEVANCE.search(ev))
 
 
 def _prices_hidden(rec: dict, now) -> bool:

@@ -24,6 +24,7 @@ except Exception:
 sys.path.insert(0, str(ROOT))
 os.environ["PROVIDER"] = "mock"
 os.environ.pop("FALLBACK_PROVIDER", None)
+os.environ["CONSENT_URL"] = ""                 # never ask a real backend; tests stub consent.lookup
 
 from tanya import timeutil                                   # noqa: E402
 from tanya import memory_model as mm                          # noqa: E402
@@ -2567,6 +2568,219 @@ def staff_bot_command_from_crm_releases_the_chat():
             os.environ.pop("CRM_WEBHOOK_SECRET", None)
         else:
             os.environ["CRM_WEBHOOK_SECRET"] = old
+
+
+# ---------------------------------------------------------------- trade summary (Row TS, trade_summary.py, FX-44…50)
+from tanya import trade_summary as TS                          # noqa: E402
+
+TS_DAY = {"date": "2026-09-28", "total_points": -12, "total_amount": -780, "trades": [
+    {"sr_no": 1, "index_name": "NIFTY", "segment": "Options", "quantity": 65, "expiry": "2026-09-30", "strike": "22500 CE",
+     "action": "BUY", "entry": 208, "sl": 198, "target": 228, "exit": 198, "high": 210, "points": -10, "amount": -650},
+    {"sr_no": 2, "index_name": "NIFTY", "segment": "Options", "quantity": 65, "expiry": "2026-09-30", "strike": "22700 PE",
+     "action": "BUY", "entry": 195, "sl": 185, "target": 215, "exit": 193, "high": 198, "points": -2, "amount": -130}]}
+
+
+def ts_reply(status="ok", **over):
+    base = {"ok": True, "status": status, "group": "trial_a", "window": {"from": "2026-09-25", "to": "2026-09-29"},
+            "available_dates": ["2026-09-28", "2026-09-25"], "date": "2026-09-28", "day": TS_DAY if status == "ok" else None}
+    base.update(over)
+    return base
+
+
+def with_ts(reply):
+    """Run with a fake backend; returns the list of (phone, date) lookups made."""
+    calls, old = [], TS.lookup
+    TS.lookup = lambda phone, date: (calls.append((phone, date)), reply)[1]
+    return calls, old
+
+
+@test
+def trade_summary_dates_he_can_name():
+    mon = datetime(2026, 9, 28, 18, 0, tzinfo=timeutil.IST)             # Monday
+    assert TS.resolve_date("kal ke trades kaise gaye?", NIGHT) == "2026-09-28"     # Tue → Mon
+    assert TS.resolve_date("kal ka result?", mon) == "2026-09-25"                  # Mon → Fri (weekend skipped)
+    assert TS.resolve_date("parso ka summary", NIGHT) == "2026-09-25"
+    assert TS.resolve_date("aaj ka P&L", NIGHT) == "2026-09-29"
+    assert TS.resolve_date("आज के ट्रेड का रिज़ल्ट", NIGHT) == "2026-09-29"
+    assert TS.resolve_date("25 sep ke trades", NIGHT) == "2026-09-25"
+    assert TS.resolve_date("25/9 ka result", NIGHT) == "2026-09-25"
+    assert TS.resolve_date("monday ka result", NIGHT) == "2026-09-28"
+    assert TS.resolve_date("trades kaise gaye is hafte", NIGHT) == "latest"
+
+
+@test
+def trade_summary_row_in_decider():
+    d = decide(labels_with(trade_results_question=True), rec_for(), NIGHT)
+    assert (d.action, d.reason) == ("ANSWER_TRADE_SUMMARY", "R-TS"), d
+    d = decide(labels_with(trade_results_question=True, distress=True), rec_for(), NIGHT)
+    assert (d.action, d.reason) == ("ANSWER_TRADE_SUMMARY", "R-TS-LOSS"), d          # loss on our calls → compare
+    assert decide(labels_with(trade_results_question=True, trade_advice_seeking=True), rec_for(), NIGHT).action == "REFUSE_AND_TEACH"
+    # "your calls gave me a loss" (also labelled grievance by the AI) → the summary comparison, not a case
+    lab = labels_with(trade_results_question=True, grievance=True, distress=True)
+    lab["text"] = "7 oct ko aapke calls se mera bahut loss ho gaya"
+    assert decide(lab, rec_for(), NIGHT).reason == "R-TS-LOSS", decide(lab, rec_for(), NIGHT)
+    # a real complaint (refund / fraud) still logs a case first
+    lab = labels_with(trade_results_question=True, grievance=True)
+    lab["text"] = "aapke calls fraud hai, mujhe refund chahiye"
+    assert decide(lab, rec_for(), NIGHT).action == "LOG_GRIEVANCE"
+    assert decide(labels_with(distress=True), rec_for(), NIGHT).action == "PAUSE_SELLING"
+    d = decide(labels_with(trade_results_question=True), rec_for("U1006"), NIGHT)      # no consent: still answered
+    assert d.action == "ANSWER_TRADE_SUMMARY", d
+
+
+@test
+def trade_summary_answer_reports_the_published_day():
+    calls, old = with_ts(ts_reply())
+    try:
+        s = fresh_store()
+        turn(s, "U1001", "Hello")
+        st = turn(s, "U1001", "kal ke trades kaise gaye?")
+        ids = [b["id"] for b in st["bubbles"]]
+        assert st["trace"]["action"] == "ANSWER_TRADE_SUMMARY", st["trace"]
+        assert calls[-1][1] == "2026-09-28", calls                                     # "kal" asked for Monday
+        assert "AI" in ids and ids[-1] == "FX-50", ids                                  # past-performance line
+        assert st["guard"]["replaced"] is False, st["guard"]
+        assert st["trace"]["knowledge"][0].startswith("TRADE-SUMMARY"), st["trace"]["knowledge"]
+        assert st["trace"]["trade_summary"]["status"] == "ok", st["trace"]["trade_summary"]
+        st = turn(s, "U1001", "aur 25 sep ke trades ka result?")
+        assert "FX-50" not in [b["id"] for b in st["bubbles"]], st["bubbles"]        # once per session
+    finally:
+        TS.lookup = old
+
+
+@test
+def trade_summary_loss_message_compares_and_pauses_selling():
+    calls, old = with_ts(ts_reply())
+    try:
+        s = fresh_store()
+        turn(s, "U1001", "Hello")
+        st = turn(s, "U1001", "aaj aapke calls se bahut loss ho gaya, sab doob gaya")
+        assert st["trace"]["reason"] == "R-TS-LOSS", st["trace"]
+        assert s.get("U1001")["session"]["selling_paused"] is True
+        assert any(h.startswith("H0") for h in st["trace"]["knowledge"][1:]), st["trace"]["knowledge"]   # one lesson too
+    finally:
+        TS.lookup = old
+
+
+@test
+def trade_summary_no_day_gives_the_right_fixed_line():
+    cases = [("not_published", "FX-44", ""), ("before_start", "FX-45", "25 Sep"), ("no_summary", "FX-46", "28 Sep"),
+             ("future", "FX-47", ""), ("expired", "FX-48", ""), ("unknown_user", "FX-49", ""), ("unavailable", "FX-49", "")]
+    for status, fx, must in cases:
+        reply = ts_reply(status) if status not in ("expired", "unknown_user", "unavailable") else {"ok": True, "status": status}
+        calls, old = with_ts(reply)
+        try:
+            s = fresh_store()
+            turn(s, "U1001", "Hello")
+            st = turn(s, "U1001", "aaj ka trade summary batao")
+            ids = [b["id"] for b in st["bubbles"]]
+            assert ids == [fx], (status, ids)
+            assert st["llm_calls"][-1]["purpose"] == "understand", (status, st["llm_calls"])   # no AI words, no guessed number
+            assert must in st["bubbles"][0]["text"] and "{" not in st["bubbles"][0]["text"], (status, st["bubbles"][0]["text"])
+            assert "25 Sep" not in st["bubbles"][0]["text"] or status == "before_start", (status, st["bubbles"][0]["text"])
+        finally:
+            TS.lookup = old
+
+
+@test
+def trade_summary_no_day_asks_which_day_then_answers_it():
+    calls, old = with_ts(ts_reply())
+    try:
+        s = fresh_store()
+        turn(s, "U1001", "Hello")
+        st = turn(s, "U1001", "i am going in loss on your calls")
+        assert [b["id"] for b in st["bubbles"]] == ["FX-51"], st["bubbles"]            # asks the day, lists none
+        assert st["trace"]["reason"] == "R-TS-ASKDAY" and calls == [], (st["trace"], calls)
+        st = turn(s, "U1001", "kal")                                                    # his answer: a day
+        assert calls[-1][1] == "2026-09-28", calls
+        assert st["trace"]["action"] == "ANSWER_TRADE_SUMMARY" and st["trace"]["reason"] == "R-TS-LOSS", st["trace"]
+        assert "Days he may ask about" not in st["trace"]["knowledge"][0], st["trace"]["knowledge"]
+        st = turn(s, "U1001", "kal")                                                    # asked once only
+        assert st["trace"]["action"] != "ANSWER_TRADE_SUMMARY" or len(calls) == 1, st["trace"]
+    finally:
+        TS.lookup = old
+    calls, old = with_ts(ts_reply("no_summary", date="2026-09-26", day=None))
+    try:
+        s = fresh_store()
+        turn(s, "U1001", "Hello")
+        st = turn(s, "U1001", "trades kaise gaye is hafte")
+        assert [b["id"] for b in st["bubbles"]] == ["FX-52"], st["bubbles"]            # no loss → plain question
+        st = turn(s, "U1001", "26 sep")
+        assert [b["id"] for b in st["bubbles"]] == ["FX-46"], st["bubbles"]            # that day: no data, says why
+        assert "26 Sep" in st["bubbles"][0]["text"] and "28 Sep" not in st["bubbles"][0]["text"], st["bubbles"]
+    finally:
+        TS.lookup = old
+
+
+@test
+def trade_summary_guard_allows_only_the_sheet():
+    sheet = TS.report_numbers(TS.as_knowledge(ts_reply())["text"])
+    ok = "On 28 Sep we published NIFTY 22500 CE BUY, entry 208, SL 198, target 228; it exited at 198 (−10 points, ₹650 loss)."
+    assert net(ok, {650}, report_numbers=sheet)[0] is False, net(ok, {650}, report_numbers=sheet)
+    assert net(ok, {650})[0] is True                                          # outside a summary answer: still blocked
+    assert net("Published NIFTY 23000 CE, entry 208.", set(), report_numbers=sheet)[0] is True    # strike not in the sheet
+    assert net("Target 300 was hit on 28 Sep.", set(), report_numbers=sheet)[0] is True           # level not in the sheet
+    assert net("Nifty upar jayega pakka, 22500 CE.", set(), report_numbers=sheet)[0] is True      # direction call stays blocked
+    assert net("The day total was ₹9,999.", {780, 650, 130}, report_numbers=sheet)[0] is True     # ₹ not in the sheet
+
+
+@test
+def trade_summary_every_new_line_has_three_languages():
+    for fx in ("FX-44", "FX-45", "FX-46", "FX-47", "FX-48", "FX-49", "FX-50", "FX-51", "FX-52"):
+        for lang in ("english", "hinglish", "hindi"):
+            txt = PACK.fixed(fx, lang, date="28 Sep (Mon)", start="25 Sep (Fri)", available="25 Sep (Fri), 28 Sep (Mon)")
+            assert txt and "{" not in txt, (fx, lang, txt)
+
+
+@test
+def guard_lets_a_denied_guarantee_through_with_any_apostrophe():
+    for ok in ("Please remember that one profitable day doesn\u2019t guarantee future results.",
+               "One good day doesn't guarantee profit tomorrow.", "Past results don\u2019t guarantee returns.",
+               "There is no guarantee of profit."):
+        assert net(ok, set())[0] is False, (ok, net(ok, set()))
+    for bad in ("We guarantee profit every day.", "Guaranteed returns with our calls.", "Pakka profit milega."):
+        assert net(bad, set())[0] is True, bad
+
+
+# ---------------------------------------------------------------- consent from the app (consent.py)
+from tanya import consent as CONSENT                          # noqa: E402
+
+
+@test
+def consent_from_the_app_turns_it_on_once():
+    old = CONSENT.lookup
+    try:
+        asked = []
+        CONSENT.lookup = lambda phone: (asked.append(phone), True)[1]
+        s = fresh_store()
+        st = turn(s, "U1006", "Hello")                                   # U1006: no consent in the CRM seed
+        assert s.get("U1006")["profile"]["consent"] is True, s.get("U1006")["profile"]
+        assert any(e["type"] == "audit" and e["event"] == "consent_on" for e in st["events"]), st["events"]
+        n = len(asked)
+        turn(s, "U1006", "kya haal hai")
+        assert len(asked) == n, asked                                    # on → never asked again
+        CONSENT.lookup = lambda phone: None                              # unknown: nothing changes
+        s = fresh_store()
+        turn(s, "U1006", "Hello")
+        assert s.get("U1006")["profile"]["consent"] is False
+        CONSENT.lookup = lambda phone: False
+        turn(s, "U1006", "Hello again")
+        assert s.get("U1006")["profile"]["consent"] is False
+        CONSENT.lookup = lambda phone: (_ for _ in ()).throw(AssertionError("asked"))
+        turn(fresh_store(), "U1001", "Hello")                            # consent already on: no lookup
+    finally:
+        CONSENT.lookup = old
+
+
+@test
+def consent_lookup_needs_url_key_and_phone():
+    assert CONSENT.lookup("8850093749") is None                          # CONSENT_URL unset in tests
+    os.environ["CONSENT_URL"] = "http://127.0.0.1:9/consent"
+    try:
+        assert CONSENT.lookup("12345") is None                           # no 10-digit phone
+        assert CONSENT.lookup("8850093749") is None                      # backend down → unknown, not "no"
+    finally:
+        os.environ["CONSENT_URL"] = ""
 
 if __name__ == "__main__":
     timeutil.set_clock(None)

@@ -46,6 +46,7 @@ ACTION_TEXT = {
     "ANSWER_PRICE": "He asked about price or plans. Give prices and contents ONLY from the APPROVED PRICING rows, exactly. If a RECOMMENDED PLAN is given, lead with it. If his pain is known, connect in his own words in one line. If inclusions say TO CONFIRM, do not describe contents — say the team will share full details. End by offering details or a call with the team. No pressure.",
     "BOUNDARY_LIGHT": "He is flirting or asking personal questions. Kind, light boundary: you are an AI assistant, these questions don't apply to you; then bring him back to his trading journey. No hearts, no playing along.",
     "ANSWER_EDUCATION": "Teach his question simply, in steps (up to {teach} short lines), from APPROVED KNOWLEDGE where it covers the topic; otherwise general textbook concepts only. Make it personal using KNOWN FACTS where natural. Never a view on a specific trade.",
+    "ANSWER_TRADE_SUMMARY": "He asks how our published trades did on a day, or says he is in loss on our calls. Answer ONLY from the APPROVED TRADE SUMMARY: the day total (trades, points, ₹) and, if he asks or it helps, the trades exactly as listed (strike, buy/sell, entry, SL, target, exit, points, ₹). Past tense; these are published past results, never advice for today or later. If the day was a loss, say so plainly with the numbers — no excuses, no spin. If he says he lost money on a day that was positive, compare kindly: say what was published (entry, SL, target, exit) and ask one short question about how he traded it (same entry and SL? exited early or late? larger quantity?); you may add one line from an APPROVED KNOWLEDGE lesson. If he is upset, acknowledge it first in his words. No selling, no plans, no predictions, no emoji. 2-6 short lines. Talk only about the day in the summary; never list or suggest other days.",
     "ANSWER_SUPPORT": "Answer his app/service question ONLY from APPROVED KNOWLEDGE. Do not invent steps, times or policies. If APPROVED KNOWLEDGE does not actually answer his question (only a related topic, or nothing), set covered to false — a senior will take it over.",
     "ANSWER": "Answer helpfully and briefly. If it touches the service, use only APPROVED sections.",
     "GREETING": "He just opened the app. Greet him warmly by name in one line. {promise_or_step} Keep it to 2 short lines, one question at the end.",
@@ -105,7 +106,7 @@ def build(action, rec, labels, day, knowledge_hits, addon, addon_detail, plan_ro
             "PAUSE_SELLING": ["distress", "loss_pain"], "LOG_GRIEVANCE": ["not_helpful", "abuse"],
             "REFUSE_AND_TEACH": ["trade_advice", "education"], "ANSWER_PRICE": ["price", "not_buying"],
             "BOUNDARY_LIGHT": ["flirting"], "ANSWER_EDUCATION": ["education", "guarantee"],
-            "GREETING": ["greeting"], "ANSWER_SUPPORT": ["not_helpful"], "ANSWER": ["education", "small_talk"],
+            "GREETING": ["greeting"], "ANSWER_SUPPORT": ["not_helpful"], "ANSWER_TRADE_SUMMARY": ["distress", "education"], "ANSWER": ["education", "small_talk"],
             "ANSWER_ONLY": ["education"]}.get(action, ["small_talk"])
     lang = labels.get("language", "hinglish")
     ex = PACK.golden_for(tags, lang, S.get("golden_examples_per_prompt", 6))

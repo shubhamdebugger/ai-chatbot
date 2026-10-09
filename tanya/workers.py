@@ -101,7 +101,8 @@ class TurnHandler:
                     st = run_turn({"user_id": event["user_id"], "kind": "app_open" if kind == "app_open" else "message",
                                    "text": event.get("text", ""), "event_id": event.get("event_id"),
                                    "conversation_id": event.get("conversation_id"), "now": tnow(),
-                                   "store": self.store, "llm": self.llm, "kb": self.kb, "seed_fn": self.seed_fn})
+                                   "store": self.store, "llm": self.llm, "kb": self.kb, "seed_fn": self.seed_fn,
+                                   "adapter": self.adapter})
                     break
                 except VersionConflict:
                     attempts_ms.append(int((time.time() - ta) * 1000))

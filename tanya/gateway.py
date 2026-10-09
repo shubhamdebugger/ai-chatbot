@@ -209,6 +209,7 @@ class ToolCall(BaseModel):
     preferred_day: str = Field(default="", max_length=20)          # today | tomorrow | monday … sunday
     preferred_hour: int | None = Field(default=None, ge=0, le=23)  # 24h, IST
     confirmed: bool = False
+    date: str = Field(default="", max_length=40)                   # trade summary: "kal", "7 Oct", "latest"…
 
 
 def _tool_ctx(body: ToolCall, x_tool_secret: str) -> dict:
@@ -254,6 +255,13 @@ def voice_tool_save_fact(body: ToolCall, x_tool_secret: str = Header("")):
 def voice_tool_report_abuse(body: ToolCall, x_tool_secret: str = Header("")):
     """Caller used abusive words (once per message). Returns the fixed line and warn/end; 3rd strike ends the call."""
     return voice_context.report_abuse(store, _tool_ctx(body, x_tool_secret), body.ctx_iat)
+
+
+@app.post("/voice/tools/trade-summary")
+def voice_tool_trade_summary(body: ToolCall, x_tool_secret: str = Header("")):
+    """Published trade summary of a day for the caller (his group, his allowed days only — pwa-node-backend decides)."""
+    from . import trade_summary
+    return trade_summary.for_voice(store, adapter, _tool_ctx(body, x_tool_secret), body.date, timeutil.now())
 
 
 # ------------------------------------------------------------------ CRM webhook

@@ -296,5 +296,68 @@
     "english": "Our team is currently unavailable. I'll continue assisting you until an agent becomes available.",
     "hinglish": "Hamari team abhi available nahi hai. Jab tak koi team member available nahi hota, main aapki madad karti rahungi.",
     "hindi": "हमारी टीम अभी उपलब्ध नहीं है। जब तक कोई टीम सदस्य उपलब्ध नहीं होता, मैं आपकी मदद करती रहूँगी।"
+  },
+  "FX-44": {
+    "moment": "Trade summary: today's sheet is not published yet (R-TS)",
+    "status": "DRAFT",
+    "english": "Today's trade summary is not published yet — it comes after market hours. Please ask me again in the evening.",
+    "hinglish": "Aaj ka trade summary abhi publish nahi hua hai — yeh market ke baad aata hai. Kripya shaam ko phir poochiye.",
+    "hindi": "आज का ट्रेड समरी अभी पब्लिश नहीं हुआ है — यह मार्केट के बाद आता है। कृपया शाम को फिर पूछिए।"
+  },
+  "FX-45": {
+    "moment": "Trade summary: the day asked is before his trial / paid start (R-TS)",
+    "status": "DRAFT",
+    "english": "{date} is before your start on {start}, so I don't have a trade summary for you for that day.",
+    "hinglish": "{date} aapke start ({start}) se pehle ka hai, isliye us din ka trade summary aapke liye mere paas nahi hai.",
+    "hindi": "{date} आपकी शुरुआत ({start}) से पहले का है, इसलिए उस दिन का ट्रेड समरी आपके लिए मेरे पास नहीं है।"
+  },
+  "FX-46": {
+    "moment": "Trade summary: no sheet for that past day - holiday or no trades (R-TS)",
+    "status": "DRAFT",
+    "english": "There is no trade summary for {date} — usually that means a market holiday or a day without trades from us.",
+    "hinglish": "{date} ka koi trade summary nahi hai — aksar us din market holiday hota hai ya hamari taraf se koi trade nahi hota.",
+    "hindi": "{date} का कोई ट्रेड समरी नहीं है — अक्सर उस दिन मार्केट की छुट्टी होती है या हमारी तरफ़ से कोई ट्रेड नहीं होता।"
+  },
+  "FX-47": {
+    "moment": "Trade summary: the day asked has not come yet (R-TS)",
+    "status": "DRAFT",
+    "english": "{date} hasn't come yet, so there is no summary for it. I can only share results of days that are over.",
+    "hinglish": "{date} abhi aaya nahi hai, isliye uska summary nahi hai. Main sirf beet chuke dino ke results share kar sakti hoon.",
+    "hindi": "{date} अभी आया नहीं है, इसलिए उसका समरी नहीं है। मैं सिर्फ़ बीत चुके दिनों के रिज़ल्ट बता सकती हूँ।"
+  },
+  "FX-48": {
+    "moment": "Trade summary: trial or plan has expired - polite, no data (R-TS)",
+    "status": "DRAFT",
+    "english": "Trade summaries are available while your trial or plan is active. If you'd like, I can ask our team to tell you about the plans.",
+    "hinglish": "Trade summary aapka trial ya plan active rehne tak milta hai. Agar aap chahein, toh main team se kehti hoon ki woh aapko plans ke baare mein bata dein.",
+    "hindi": "ट्रेड समरी आपका ट्रायल या प्लान एक्टिव रहने तक मिलता है। अगर आप चाहें, तो मैं टीम से कहती हूँ कि वो आपको प्लान्स के बारे में बता दें।"
+  },
+  "FX-49": {
+    "moment": "Trade summary: cannot be checked for this account right now - never guess numbers (R-TS)",
+    "status": "DRAFT",
+    "english": "I can't check the trade summary for your account right now. Please try again in a little while.",
+    "hinglish": "Main abhi aapke account ke liye trade summary check nahi kar pa rahi. Kripya thodi der baad phir poochiye.",
+    "hindi": "मैं अभी आपके अकाउंट के लिए ट्रेड समरी चेक नहीं कर पा रही। कृपया थोड़ी देर बाद फिर पूछिए।"
+  },
+  "FX-50": {
+    "moment": "Trade summary: disclaimer after reporting past results (once per session)",
+    "status": "DRAFT",
+    "english": "These are past results. Past performance does not guarantee future returns; trading carries risk.",
+    "hinglish": "Yeh pichle results hain. Pichla performance future returns ki guarantee nahi hai; trading mein risk hota hai.",
+    "hindi": "ये पिछले रिज़ल्ट हैं। पिछला परफ़ॉर्मेंस भविष्य के रिटर्न की गारंटी नहीं है; ट्रेडिंग में जोखिम होता है।"
+  },
+  "FX-51": {
+    "moment": "Trade summary: he is in loss but names no day - ask which day he traded, never list dates (R-TS-ASKDAY)",
+    "status": "DRAFT",
+    "english": "I'm sorry about the loss. Which day did you take the trade? Tell me the date — for example 'yesterday' or 'Monday' — and I'll check what we published for that day.",
+    "hinglish": "Loss ke liye mujhe afsos hai. Aapne trade kis din liya tha? Date bataiye — jaise 'kal' ya 'Monday' — main us din ka published trade summary check karti hoon.",
+    "hindi": "लॉस के लिए मुझे अफ़सोस है। आपने ट्रेड किस दिन लिया था? तारीख़ बताइए — जैसे 'कल' या 'सोमवार' — मैं उस दिन का पब्लिश्ड ट्रेड समरी चेक करती हूँ।"
+  },
+  "FX-52": {
+    "moment": "Trade summary: asks about our trades but names no day - ask which day, never list dates (R-TS-ASKDAY)",
+    "status": "DRAFT",
+    "english": "Which day's trades would you like to know about? Tell me the date — for example 'yesterday' or 'Monday' — and I'll check what we published.",
+    "hinglish": "Aap kis din ke trades ke baare mein jaanna chahte hain? Date bataiye — jaise 'kal' ya 'Monday' — main us din ka published trade summary check karti hoon.",
+    "hindi": "आप किस दिन के ट्रेड्स के बारे में जानना चाहते हैं? तारीख़ बताइए — जैसे 'कल' या 'सोमवार' — मैं उस दिन का पब्लिश्ड ट्रेड समरी चेक करती हूँ।"
   }
 }

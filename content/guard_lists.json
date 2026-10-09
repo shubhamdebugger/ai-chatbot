@@ -34,5 +34,5 @@
     {"id": "A2", "pattern": "\\b(chu+tiy\\w*|chu+t|madar ?ch[ou]d\\w*|mader ?ch[ou]d\\w*|maa ?ch[ou]d\\w*|behen ?ch[ou]d\\w*|bahen ?ch[ou]d\\w*|bhen ?ch[ou]d\\w*|bhosd\\w*|bhosad\\w*|gaa?ndu\\w*|gaand|randi\\w*|harami\\w*|haramkhor\\w*|lund|lavde|lawde|lodu|jhaat\\w*)\\b", "why": "Gaali (Hinglish)"},
     {"id": "A3", "pattern": "(चूतिय|मादरचोद|बहनचोद|बेहनचोद|भोसड़|भोसड|गांडू|गांड|रंडी|हरामी|हरामखोर|लौड़|लंड)", "why": "Gaali (Hindi)"}
   ],
-  "denial_words": ["nahi", "nahin", "not", "no ", "never", "cannot", "can't", "koi bhi", "नहीं", "न ", "mat"]
+  "denial_words": ["nahi", "nahin", "not", "no ", "never", "cannot", "can't", "n't", "koi bhi", "नहीं", "न ", "mat"]
 }
