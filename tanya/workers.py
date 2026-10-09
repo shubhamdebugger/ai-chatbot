@@ -68,10 +68,13 @@ class TurnHandler:
             on = access.chat_enabled(self.adapter, self.store, event.get("user_id", ""))
             access.mark_off(self.store, conv0, not on)
             if not on:                                # not on the list: the team answers, Tanya stays silent
+                if conv0:
+                    self.store.typing_clear(conv0)    # the webhook's "queued" must not stay on screen
                 self._mark(event, "done")
                 self._outcome(event, "SKIPPED_GATE")
                 return None
-        if conv0 and kind == "user_message":          # the PWA shows "typing" only while this is set (06-Oct)
+        if conv0 and kind == "user_message" and not self.store.human_flag(conv0, tnow()):
+            # the PWA shows "typing" only while this is set (06-Oct); never in HUMAN mode (09-Oct)
             self.store.typing_set(conv0, "working", S.get("typing_ttl_seconds", 90))
         retrying = False
         try:

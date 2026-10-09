@@ -315,7 +315,8 @@ def _webhook(payload, headers):
              "received_ms": int(time.time() * 1000), "source": "webhook"}
     if SERVER:
         queued = intake.enqueue(event)                              # Redis down -> raises -> 503 at once
-        if queued and ev.kind == "user_message" and not store.human_flag(ev.conversation_id, timeutil.now()):
+        if queued and ev.kind == "user_message" and not store.human_flag(ev.conversation_id, timeutil.now()) \
+                and not access.off_now(store, ev.conversation_id, ev.user_id):   # handed over / muted: no typing
             store.typing_set(ev.conversation_id, "queued", S.get("typing_ttl_seconds", 90))   # PWA typing truth
         store.r.set("tanya:metrics:webhook_last", int(time.time()))   # monitoring, only after a good enqueue
         return 200, {"ok": True, "queued": queued}, ev
@@ -340,11 +341,14 @@ def pwa_status(conversation_id: str, request: Request):
         return JSONResponse({"ok": False}, status_code=403)
     now = timeutil.now()
     h = store.handoff_get(conversation_id)
-    return {"ok": True, "typing": store.typing_get(conversation_id),
+    # not on the dashboard's AI list: the team answers this chat, so the PWA shows "team will reply"
+    human = bool(store.human_flag(conversation_id, now) or access.is_off(store, conversation_id))
+    # HUMAN (handed over / muted): never "typing", whatever a turn still in flight left behind (09-Oct-2026)
+    return {"ok": True, "typing": None if human else store.typing_get(conversation_id),
             "last_reply_id": store.last_reply_get(conversation_id),
-            "last_received_id": int(store.r.get(f"tanya:lastin:{conversation_id}") or 0) if hasattr(store, "r") else 0,
-            # not on the dashboard's AI list: the team answers this chat, so the PWA shows "team will reply"
-            "mode": "HUMAN" if store.human_flag(conversation_id, now) or access.is_off(store, conversation_id) else "BOT",
+            "last_received_id": 0 if human or not hasattr(store, "r")
+            else int(store.r.get(f"tanya:lastin:{conversation_id}") or 0),
+            "mode": "HUMAN" if human else "BOT",
             "handoff": {k: h.get(k) for k in ("status", "period", "started_at", "due_at")} if h else None}
 
 

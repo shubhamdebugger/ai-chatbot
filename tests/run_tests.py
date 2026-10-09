@@ -2481,6 +2481,8 @@ def chat_only_for_numbers_on_the_ai_list():
         r = _FakeR()
         def emit(self, events):
             self.events = getattr(self, "events", []) + events
+        def typing_clear(self, conversation_id):
+            self.r.delete(f"tanya:typing:{conversation_id}")
 
     class Adapter:
         access_gate = True
@@ -2781,6 +2783,140 @@ def consent_lookup_needs_url_key_and_phone():
         assert CONSENT.lookup("8850093749") is None                      # backend down → unknown, not "no"
     finally:
         os.environ["CONSENT_URL"] = ""
+
+
+# ---------------------------------------------------------------- 09-Oct-2026: no "Tanya is typing" when handed over / muted
+class _Req:
+    def __init__(self, key):
+        self.headers = {"x-tanya-key": key}
+
+
+class _Ev:
+    def __init__(self, eid, conv, uid, kind="user_message"):
+        self.event_id, self.conversation_id, self.user_id, self.kind, self.text = eid, conv, uid, kind, "hi"
+
+
+def _gateway_on(store):
+    """The gateway module wired to a test store, server mode, a fake intake; returns (gateway, restore)."""
+    from tanya import gateway as gw
+    saved = (gw.store, gw.SERVER, gw.intake, gw.adapter, os.environ.get("TANYA_API_KEY"))
+    gw.store, gw.SERVER, gw.intake = store, True, _FakeIntake()
+    os.environ["TANYA_API_KEY"] = "test-key"
+
+    def restore():
+        gw.store, gw.SERVER, gw.intake, gw.adapter = saved[:4]
+        if saved[4] is None:
+            os.environ.pop("TANYA_API_KEY", None)
+        else:
+            os.environ["TANYA_API_KEY"] = saved[4]
+    return gw, restore
+
+
+@test
+def worker_sets_no_typing_in_human_mode():
+    """A message while staff has the chat: the worker never puts 'typing' up, not even for a moment."""
+    from tanya.crm_adapter import ConsoleAdapter
+    from tanya.workers import TurnHandler
+    os.environ["USE_LANGGRAPH"] = "0"
+    s, a, seen = fresh_store(), ConsoleAdapter(), []
+    orig = s.typing_set
+    s.typing_set = lambda c, st, ttl: (seen.append((c, st)), orig(c, st, ttl))
+    s.set_human_flag("C97", 12, DAY)
+    timeutil.set_clock(DAY)
+    TurnHandler(s, LLMX, KB, a, lambda u: PACK.test_users.get(u))(
+        {"event_id": "971", "kind": "user_message", "user_id": "U1001", "conversation_id": "C97", "text": "Hello"})
+    assert seen == [] and s.typing_get("C97") is None and a.outbox.get("C97") is None, seen
+    TurnHandler(s, LLMX, KB, a, lambda u: PACK.test_users.get(u))(        # BOT chat: typing as before
+        {"event_id": "972", "kind": "user_message", "user_id": "U1001", "conversation_id": "C98", "text": "Hello"})
+    assert seen == [("C98", "working")] and s.typing_get("C98") is None, seen
+
+
+if os.environ.get("TEST_REDIS_URL"):
+    @test
+    def pwa_status_never_says_typing_when_handed_over_or_muted():
+        from tanya import access
+        from tanya.memory_store import RedisStore
+        url = os.environ["TEST_REDIS_URL"]
+        assert url != os.environ.get("REDIS_URL"), "TEST_REDIS_URL must not be the live Redis (it is flushed)"
+        s = RedisStore(url)
+        s.r.flushdb()
+        gw, restore = _gateway_on(s)
+        try:
+            assert gw.pwa_status("C1", _Req("wrong")).status_code == 403
+            s.typing_set("C1", "working", 90)
+            s.r.set("tanya:lastin:C1", "1005")
+            j = gw.pwa_status("C1", _Req("test-key"))
+            assert j["mode"] == "BOT" and j["typing"] == "working" and j["last_received_id"] == 1005, j
+            from tanya.handoff_recovery import start_handoff              # Tanya hands over mid-turn
+            start_handoff(s, "C1", "U1", "HAND_OVER_PERSON", "R06", DAY, last_message_id="1005")
+            j = gw.pwa_status("C1", _Req("test-key"))
+            assert j["mode"] == "HUMAN" and j["typing"] is None and j["last_received_id"] == 0, j
+            assert j["handoff"]["status"] == "open"
+            s.release_conversation("C1", DAY)                             # staff gives it back: typing again
+            j = gw.pwa_status("C1", _Req("test-key"))
+            assert j["mode"] == "BOT" and j["typing"] == "working", j
+            access.mark_off(s, "C1", True)                                # muted on the dashboard
+            j = gw.pwa_status("C1", _Req("test-key"))
+            assert j["mode"] == "HUMAN" and j["typing"] is None, j
+        finally:
+            restore()
+
+    @test
+    def webhook_puts_no_typing_up_when_handed_over_or_muted():
+        from tanya import access
+        from tanya.memory_store import RedisStore
+        from tanya.workers import TurnHandler
+        url = os.environ["TEST_REDIS_URL"]
+        assert url != os.environ.get("REDIS_URL"), "TEST_REDIS_URL must not be the live Redis (it is flushed)"
+        s = RedisStore(url)
+        s.r.flushdb()
+        gw, restore = _gateway_on(s)
+
+        class Adapter:
+            access_gate = True
+            ev = None
+            def parse_webhook(self, payload, headers):
+                return self.ev
+            def get_user(self, user_id):
+                return {"details": [{"slug": "phone", "value": "+91 98765 43210"}]}
+        gw.adapter = ad = Adapter()
+        old = dict(access._cache)
+
+        def send(eid, conv, uid):
+            ad.ev = _Ev(eid, conv, uid)
+            status, body, _ = gw._webhook({}, {})
+            assert status == 200 and body.get("queued"), body
+        try:
+            access._cache.update(at=time.time(), value={"everyone": True, "phones": set()})
+            send("1", "C1", "U1")                                         # Tanya on: typing as before
+            assert s.typing_get("C1") == "queued"
+            s.set_human_flag("C2", 12, DAY)                               # handed over: no typing
+            send("2", "C2", "U2")
+            assert s.typing_get("C2") is None
+            # muted: not on the AI list and the phone is known (cached) -> no typing, chat remembered as off
+            access._cache.update(at=time.time(), value={"everyone": False, "phones": {"9000000000"}})
+            s.r.set("tanya:phone:U3", "9876543210")
+            send("3", "C3", "U3")
+            assert s.typing_get("C3") is None and access.is_off(s, "C3")
+            assert gw.pwa_status("C3", _Req("test-key"))["mode"] == "HUMAN"
+            send("4", "C4", "U4")                     # phone not cached yet: the webhook never asks the CRM ...
+            assert s.typing_get("C4") == "queued" and not access.is_off(s, "C4")
+            TurnHandler(s, LLMX, KB, ad, lambda u: None)(               # ... the worker's gate clears it at once
+                {"event_id": "4", "kind": "user_message", "user_id": "U4", "conversation_id": "C4", "text": "hi"})
+            assert s.typing_get("C4") is None and access.is_off(s, "C4")
+            j = gw.pwa_status("C4", _Req("test-key"))
+            assert j["mode"] == "HUMAN" and j["typing"] is None, j
+            s.r.set("tanya:phone:U5", "9000000000")                       # listed number: typing as before
+            send("5", "C5", "U5")
+            assert s.typing_get("C5") == "queued" and not access.is_off(s, "C5")
+            access._cache.update(at=time.time() - 120)                    # stale list: no guess, worker decides
+            s.r.set("tanya:phone:U6", "9876543210")
+            send("6", "C6", "U6")
+            assert s.typing_get("C6") == "queued"
+        finally:
+            access._cache.clear()
+            access._cache.update(old)
+            restore()
 
 if __name__ == "__main__":
     timeutil.set_clock(None)

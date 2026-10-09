@@ -117,3 +117,24 @@ def mark_off(store, conversation_id, off: bool):
 def is_off(store, conversation_id) -> bool:
     r = getattr(store, "r", None)
     return bool(r is not None and conversation_id and r.exists(f"tanya:off:{conversation_id}"))
+
+
+def off_now(store, conversation_id, user_id) -> bool:
+    """For the webhook (must stay fast, no CRM call): is Tanya muted for this chat? The remembered per-chat flag,
+    or the cached AI list and the cached phone. Unknown (phone not cached yet) → False: the worker decides."""
+    if is_off(store, conversation_id):
+        return True
+    r = getattr(store, "r", None)
+    v = _cache["value"]
+    if r is None or not user_id or v is None or v["everyone"] or time.time() - _cache["at"] >= CACHE_SECS:
+        return False
+    try:
+        phone = r.get(f"tanya:phone:{user_id}")
+    except Exception:
+        return False
+    if phone is None:
+        return False
+    off = phone not in v["phones"]
+    if off:
+        mark_off(store, conversation_id, True)
+    return off
